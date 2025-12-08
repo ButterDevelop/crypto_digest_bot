@@ -26,7 +26,7 @@ A powerful Telegram bot that aggregates cryptocurrency news from multiple channe
 
 ### 📬 Support System
 - **Support Tickets** - users can send messages to support via `/support`
-- **Admin Replies** - admins can reply to support tickets
+- **Admin Replies** - admins can reply to support tickets (just reply to the message)
 
 ### 🌐 Multi-language Support
 - Interface and digests can be translated to multiple languages
@@ -198,6 +198,7 @@ The bot will:
 | `/digest` | Request an immediate personal digest (uses free trial or subscription) |
 | `/digest_mode` | Switch between PDF and message delivery |
 | `/language` | Change interface and digest language |
+| `/support` | Contact support |
 
 ### Admin Commands
 
