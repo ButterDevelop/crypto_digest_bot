@@ -1,0 +1,5 @@
+python-telegram-bot[job-queue]>=21.9
+snscrape
+openai>=1.40.0
+python-dotenv
+weasyprint>=60.0
