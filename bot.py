@@ -60,6 +60,25 @@ TOPUP_PAYLOAD_PREFIX = "TOPUP:"  # to differentiate the payment type by payload
 # Global digest interval (minutes) - can be changed via /auto_digest by admin
 global_digest_interval_min: int = settings.digest_interval_min
 
+# Track processed media groups to avoid duplicate support tickets
+# Key: (user_id, media_group_id), Value: timestamp
+processed_media_groups: dict = {}
+
+# Track active support sessions (user can send media after /support command)
+# Key: user_id, Value: {'ticket_id': int, 'admin_id': int, 'started_at': timestamp}
+active_support_sessions: dict = {}
+
+# Track media groups that started with /support (to handle race condition)
+# Key: media_group_id, Value: {'user_id': int, 'admin_id': int, 'ticket_id': int, 'started_at': timestamp}
+allowed_support_media_groups: dict = {}
+
+# Track last support request time per user (to determine response type for unsolicited media)
+# Key: user_id, Value: timestamp of last /support command
+last_support_request_time: dict = {}
+
+SESSION_TIMEOUT_SECONDS = 60  # 1 minute
+SUPPORT_CONTEXT_TIMEOUT_SECONDS = 300  # 5 minutes - time window for "session expired" message
+
 
 # --- Helpers --------------------------------------------------------------
 
@@ -130,6 +149,36 @@ def _split_digest_into_messages(html_text: str, max_len: int = 3900) -> list[str
     # No hard-truncations [:MAX_TG_MESSAGE_LEN] here,
     # to avoid breaking HTML tags.
     return messages
+
+
+def _get_active_support_session(user_id: int) -> Optional[dict]:
+    """
+    Get active support session for user if it exists and hasn't expired.
+    Returns session dict or None.
+    Also cleans up expired sessions.
+    """
+    current_time = datetime.now(timezone.utc).timestamp()
+    
+    # Clean up expired sessions
+    expired_users = [
+        uid for uid, session in active_support_sessions.items()
+        if current_time - session['started_at'] > SESSION_TIMEOUT_SECONDS
+    ]
+    for uid in expired_users:
+        active_support_sessions.pop(uid, None)
+        logger.info(f"Cleaned up expired support session for user {uid}")
+    
+    # Get user's session if it exists and is valid
+    session = active_support_sessions.get(user_id)
+    if session:
+        if current_time - session['started_at'] <= SESSION_TIMEOUT_SECONDS:
+            return session
+        else:
+            # Expired, remove it
+            active_support_sessions.pop(user_id, None)
+            return None
+    
+    return None
 
 
 def _now_utc() -> datetime:
@@ -515,13 +564,37 @@ async def aggregate_reports_job(context: ContextTypes.DEFAULT_TYPE) -> None:
     """
     Daily job: ensures that:
     - there is a weekly report for the last fully completed week,
-    - there is a monthly report for the last fully completed month.
+    - there is a monthly report for the last fully completed month,
+    - there is an annual report for the last fully completed year.
+    
+    If a new report is created, it will be sent to all eligible users.
     """
     now = _now_utc()
     logger.info("Running aggregate_reports_job at %s", now.isoformat())
 
+    # Get all users who should receive digests
+    users = get_all_users()
+    recipients: List[User] = [
+        u for u in users if _user_can_receive_digest(u, now)
+    ]
+
+    if not recipients:
+        logger.info("No eligible recipients for aggregate reports")
+        # Still generate reports even if no recipients
+    
+    # Helper function to check if report was just created (within last 5 minutes)
+    def _is_newly_created(report: Report) -> bool:
+        if report is None:
+            return False
+        created_at = report.created_at
+        if created_at.tzinfo is None:
+            created_at = created_at.replace(tzinfo=timezone.utc)
+        time_since_creation = now - created_at
+        return time_since_creation.total_seconds() < 300  # 5 minutes
+
+    # === WEEKLY REPORT ===
     try:
-        weekly_report = ensure_last_weekly_report(now)
+        weekly_report = await ensure_last_weekly_report(now)
         if weekly_report:
             logger.info(
                 "Weekly report ready: id=%s, period=%s..%s",
@@ -529,11 +602,35 @@ async def aggregate_reports_job(context: ContextTypes.DEFAULT_TYPE) -> None:
                 weekly_report.period_start_utc.isoformat(),
                 weekly_report.period_end_utc.isoformat(),
             )
+            
+            # Send to users if newly created
+            if _is_newly_created(weekly_report) and recipients:
+                logger.info("Sending weekly report to %d users", len(recipients))
+                translated_cache: Dict[str, Dict] = {}
+                pdf_cache: Dict[str, str] = {}
+                
+                for user in recipients:
+                    try:
+                        await _send_report_to_user(
+                            context,
+                            user,
+                            weekly_report,
+                            translated_cache,
+                            pdf_cache
+                        )
+                        logger.info("Sent weekly report to user %s", user.user_id)
+                    except Exception as e:
+                        logger.exception(
+                            "Failed to send weekly report to user %s: %s",
+                            user.user_id, e
+                        )
+                        continue
     except Exception as e:
         logger.exception("Failed to ensure weekly report: %s", e)
 
+    # === MONTHLY REPORT ===
     try:
-        monthly_report = ensure_last_monthly_report(now)
+        monthly_report = await ensure_last_monthly_report(now)
         if monthly_report:
             logger.info(
                 "Monthly report ready: id=%s, period=%s..%s",
@@ -541,11 +638,35 @@ async def aggregate_reports_job(context: ContextTypes.DEFAULT_TYPE) -> None:
                 monthly_report.period_start_utc.isoformat(),
                 monthly_report.period_end_utc.isoformat(),
             )
+            
+            # Send to users if newly created
+            if _is_newly_created(monthly_report) and recipients:
+                logger.info("Sending monthly report to %d users", len(recipients))
+                translated_cache: Dict[str, Dict] = {}
+                pdf_cache: Dict[str, str] = {}
+                
+                for user in recipients:
+                    try:
+                        await _send_report_to_user(
+                            context,
+                            user,
+                            monthly_report,
+                            translated_cache,
+                            pdf_cache
+                        )
+                        logger.info("Sent monthly report to user %s", user.user_id)
+                    except Exception as e:
+                        logger.exception(
+                            "Failed to send monthly report to user %s: %s",
+                            user.user_id, e
+                        )
+                        continue
     except Exception as e:
         logger.exception("Failed to ensure monthly report: %s", e)
 
+    # === ANNUAL REPORT ===
     try:
-        annual_report = ensure_last_annual_report(now)
+        annual_report = await ensure_last_annual_report(now)
         if annual_report:
             logger.info(
                 "Annual report ready: id=%s, period=%s..%s",
@@ -553,6 +674,29 @@ async def aggregate_reports_job(context: ContextTypes.DEFAULT_TYPE) -> None:
                 annual_report.period_start_utc.isoformat(),
                 annual_report.period_end_utc.isoformat(),
             )
+            
+            # Send to users if newly created
+            if _is_newly_created(annual_report) and recipients:
+                logger.info("Sending annual report to %d users", len(recipients))
+                translated_cache: Dict[str, Dict] = {}
+                pdf_cache: Dict[str, str] = {}
+                
+                for user in recipients:
+                    try:
+                        await _send_report_to_user(
+                            context,
+                            user,
+                            annual_report,
+                            translated_cache,
+                            pdf_cache
+                        )
+                        logger.info("Sent annual report to user %s", user.user_id)
+                    except Exception as e:
+                        logger.exception(
+                            "Failed to send annual report to user %s: %s",
+                            user.user_id, e
+                        )
+                        continue
     except Exception as e:
         logger.exception("Failed to ensure annual report: %s", e)
 
@@ -919,7 +1063,7 @@ async def check_missed_reports_job(context: ContextTypes.DEFAULT_TYPE) -> None:
     # === 2) Weekly / Monthly ===
     # Here everything is simpler: our ensure_last_* are already idempotent in themselves and are not tied to "today is Monday/1st"
     try:
-        weekly = ensure_last_weekly_report(now)
+        weekly = await ensure_last_weekly_report(now)
         if weekly:
             logger.info(
                 "Weekly report ensured: id=%s (%s..%s)",
@@ -928,7 +1072,7 @@ async def check_missed_reports_job(context: ContextTypes.DEFAULT_TYPE) -> None:
                 weekly.period_end_utc,
             )
 
-        monthly = ensure_last_monthly_report(now)
+        monthly = await ensure_last_monthly_report(now)
         if monthly:
             logger.info(
                 "Monthly report ensured: id=%s (%s..%s)",
@@ -1550,7 +1694,8 @@ async def support_command(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
     if not message_text.strip():
         msg = await get_translation(
             "📝 Usage: <b>/support your message</b>\n\n"
-            "Example: <b>/support I have a question about subscription</b>",
+            "Example: <b>/support I have a question about subscription</b>\n\n"
+            "You can pin photos or files to send them as a support request with the text",
             lang
         )
         await update.message.reply_text(msg, parse_mode="HTML")
@@ -1589,7 +1734,12 @@ async def support_command(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
     
     lines.append("")
     lines.append(await get_translation("📝 <b>Message:</b>", lang))
-    lines.append(message_text)
+    # Display placeholder if message is empty or just the command
+    if message_text.strip() and message_text.strip() != "/support":
+        lines.append(message_text)
+    else:
+        empty_msg = await get_translation("<i>empty message</i>", lang)
+        lines.append(empty_msg)
 
     
     admin_message = "\n".join(lines)
@@ -1597,6 +1747,8 @@ async def support_command(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
     # Send to all admins
     admins = get_all_admin_users()
     sent_count = 0
+    first_ticket_id = None
+    first_admin_id = None
     
     for admin in admins:
         try:
@@ -1606,7 +1758,7 @@ async def support_command(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
                 parse_mode="HTML",
             )
             # Create ticket with reference to this message
-            create_support_ticket(
+            ticket = create_support_ticket(
                 user_id=tg_user.id,
                 message=message_text,
                 username=username,
@@ -1616,14 +1768,32 @@ async def support_command(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
                 admin_message_id=sent_msg.message_id,
                 admin_id=admin.user_id,
             )
+            # Remember first ticket for session
+            if first_ticket_id is None:
+                first_ticket_id = ticket.id
+                first_admin_id = admin.user_id
+            
             sent_count += 1
         except Exception as e:
             logger.error("Failed to send support message to admin %s: %s", admin.user_id, e)
     
     if sent_count > 0:
+        # Create support session for this user
+        if first_ticket_id and first_admin_id:
+            current_timestamp = datetime.now(timezone.utc).timestamp()
+            active_support_sessions[tg_user.id] = {
+                'ticket_id': first_ticket_id,
+                'admin_id': first_admin_id,
+                'started_at': current_timestamp
+            }
+            # Track last support request time for context-aware responses
+            last_support_request_time[tg_user.id] = current_timestamp
+            logger.info(f"Created support session for user {tg_user.id}, ticket {first_ticket_id}")
+        
         msg = await get_translation(
             "✅ Your message has been sent to the support team.\n"
-            "We will reply as soon as possible.",
+            "📎 You can now send photos or files (valid for 1 minute).\n"
+            "They will be automatically attached to your request.",
             lang
         )
     else:
@@ -1635,10 +1805,343 @@ async def support_command(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
     await update.message.reply_text(msg, parse_mode="HTML")
 
 
+async def support_media_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """
+    Handle media messages (photo, document, video, audio, voice) as support requests.
+    Only processes media if user has an active support session from /support command.
+    Handles media groups (albums) to avoid duplicate tickets.
+    """
+    message = update.effective_message
+    tg_user = update.effective_user
+    
+    if message is None or tg_user is None:
+        return
+    
+    user = get_or_create_user(tg_user.id)
+    lang = user.language or "ru"
+    
+    # Check if this file belongs to an allowed media group (from /support caption)
+    media_group_id = message.media_group_id
+    media_caption = message.caption or ""
+    media_group_session = None
+    
+    # If this is a media group file WITHOUT /support caption, add small delay
+    # to allow the first file (with /support) to register the group first
+    if media_group_id and not media_caption.strip().startswith("/support"):
+        import asyncio
+        await asyncio.sleep(0.5)  # Wait for first file to register session
+    
+    if media_group_id and media_group_id in allowed_support_media_groups:
+        group_info = allowed_support_media_groups[media_group_id]
+        # Check if it's still valid (within timeout) and same user
+        current_time = datetime.now(timezone.utc).timestamp()
+        if current_time - group_info['started_at'] <= SESSION_TIMEOUT_SECONDS and group_info['user_id'] == tg_user.id:
+            media_group_session = group_info
+            logger.info(f"Using allowed media group session for user {tg_user.id}, group {media_group_id}")
+    
+    # Check if user has active support session
+    session = _get_active_support_session(tg_user.id)
+    
+    # Use media group session if available (handles race condition)
+    if media_group_session and not session:
+        session = media_group_session
+    
+    # Special case: if caption starts with /support, treat it as support command with media
+    # media_caption already defined above
+    created_new_session_from_caption = False
+    
+    if media_caption.strip().startswith("/support") and not session:
+        # Extract message text after /support
+        message_text = media_caption.strip()[8:].strip()  # Remove "/support" prefix
+        
+        # Create ticket and session (same logic as support_command)
+        username = tg_user.username
+        first_name = tg_user.first_name
+        last_name = tg_user.last_name
+        language_code = tg_user.language_code
+        
+        # Build admin message (text-only, media will follow)
+        lines = []
+        lines.append(await get_translation("📩 <b>Support Request</b>", lang))
+        lines.append("")
+        lines.append(await get_translation("👤 <b>User Info:</b>", lang))
+        lines.append(f"🆔 <b>{await get_translation('ID', lang)}:</b> <code>{tg_user.id}</code>")
+        
+        if username:
+            lines.append(f"📧 <b>{await get_translation('Username', lang)}:</b> @{username}")
+        if first_name or last_name:
+            name_parts = [p for p in [first_name, last_name] if p]
+            lines.append(f"👤 <b>{await get_translation('Name', lang)}:</b> {' '.join(name_parts)}")
+        if language_code:
+            lines.append(f"🌐 <b>{await get_translation('TG Language', lang)}:</b> {language_code}")
+        
+        lines.append(f"💬 <b>{await get_translation('DB Language', lang)}:</b> {user.language}")
+        lines.append(f"🎭 <b>{await get_translation('Role', lang)}:</b> {'Admin' if user.is_admin else 'User'}")
+        lines.append(f"⭐ <b>{await get_translation('Balance', lang)}:</b> {user.balance_stars}")
+        
+        if user.subscription_until:
+            sub_str = _format_dt_utc(user.subscription_until)
+            lines.append(f"📅 <b>{await get_translation('Subscription', lang)}:</b> until {sub_str}")
+        else:
+            lines.append(f"📅 <b>{await get_translation('Subscription', lang)}:</b> None")
+        
+        lines.append("")
+        lines.append(await get_translation("📝 <b>Message:</b>", lang))
+        if message_text.strip():
+            lines.append(message_text)
+        else:
+            lines.append(await get_translation("<i>empty message</i>", lang))
+        
+        admin_message_text = "\n".join(lines)
+        
+        # Send text message to all admins first
+        admins = get_all_admin_users()
+        first_ticket_id = None
+        first_admin_id = None
+        
+        for admin in admins:
+            try:
+                sent_msg = await context.bot.send_message(
+                    chat_id=admin.user_id,
+                    text=admin_message_text,
+                    parse_mode="HTML",
+                )
+                # Create ticket
+                ticket = create_support_ticket(
+                    user_id=tg_user.id,
+                    message=message_text or "[Media with /support]",
+                    username=username,
+                    first_name=first_name,
+                    last_name=last_name,
+                    language_code=language_code,
+                    admin_message_id=sent_msg.message_id,
+                    admin_id=admin.user_id,
+                )
+                if first_ticket_id is None:
+                    first_ticket_id = ticket.id
+                    first_admin_id = admin.user_id
+            except Exception as e:
+                logger.error("Failed to send support message to admin %s: %s", admin.user_id, e)
+        
+        # Create session for this user
+        if first_ticket_id and first_admin_id:
+            current_timestamp = datetime.now(timezone.utc).timestamp()
+            session_data = {
+                'ticket_id': first_ticket_id,
+                'admin_id': first_admin_id,
+                'started_at': current_timestamp,
+                'user_id': tg_user.id  # Add user_id for media group tracking
+            }
+            active_support_sessions[tg_user.id] = session_data
+            # Track last support request time for context-aware responses
+            last_support_request_time[tg_user.id] = current_timestamp
+            logger.info(f"Created support session for user {tg_user.id} via /support in caption")
+            
+            # If this is a media group, register it for subsequent files
+            if media_group_id:
+                allowed_support_media_groups[media_group_id] = session_data
+                logger.info(f"Registered media group {media_group_id} for subsequent files")
+            
+            # Now get the session for media processing
+            session = active_support_sessions[tg_user.id]
+            created_new_session_from_caption = True
+        else:
+            # Failed to create ticket
+            msg = await get_translation(
+                "❌ Failed to send your message. Please try again later.",
+                lang
+            )
+            await message.reply_text(msg, parse_mode="HTML")
+            return
+    
+    if not session:
+        # Check if user recently used /support (within 5 minutes)
+        current_time = datetime.now(timezone.utc).timestamp()
+        last_request_time = last_support_request_time.get(tg_user.id)
+        
+        if last_request_time and (current_time - last_request_time) <= SUPPORT_CONTEXT_TIMEOUT_SECONDS:
+            # User recently used /support, but session expired - show session expired message
+            msg = await get_translation(
+                "ℹ️ To send a support request, please use:\n"
+                "<b>/support your message</b>\n\n"
+                "Then you can attach files within 1 minute.",
+                lang
+            )
+        else:
+            # No recent /support request - show unrecognized command message
+            msg = await get_translation(
+                "🤷 Unrecognized command or action.\n"
+                "Type <b>/start</b> to see the list of available commands.",
+                lang
+            )
+        
+        await message.reply_text(msg, parse_mode="HTML")
+        return
+    
+    
+    # Check if this is part of a media group (album) for user confirmation purposes
+    # media_group_id already defined above for media group session check
+    is_first_in_group = True
+    
+    if media_group_id and not created_new_session_from_caption:
+        # Only check media group deduplication if NOT from /support caption
+        # (because /support caption creates session for first file, subsequent files should still be sent)
+        group_key = (tg_user.id, media_group_id)
+        current_time = datetime.now(timezone.utc).timestamp()
+        
+        # Clean old entries (older than 5 minutes)
+        keys_to_remove = [
+            key for key, timestamp in processed_media_groups.items()
+            if current_time - timestamp > 300
+        ]
+        for key in keys_to_remove:
+            processed_media_groups.pop(key, None)
+        
+        # Check if this is NOT the first message in the group
+        if group_key in processed_media_groups:
+            logger.info(f"Processing additional file from media group for user {tg_user.id}")
+            is_first_in_group = False
+        else:
+            # Mark this group as processed (this is the first file)
+            processed_media_groups[group_key] = current_time
+    elif media_group_id and created_new_session_from_caption:
+        # This is from /support caption - mark the group as seen now
+        # so subsequent files will be treated as continuation
+        group_key = (tg_user.id, media_group_id)
+        current_time = datetime.now(timezone.utc).timestamp()
+        processed_media_groups[group_key] = current_time
+    
+    user = get_or_create_user(tg_user.id)
+    lang = user.language or "ru"
+    
+    # Determine media type and file_id
+    media_type = None
+    media_file_id = None
+    # media_caption already defined above for /support check
+    
+    if message.photo:
+        media_type = "photo"
+        media_file_id = message.photo[-1].file_id  # Largest photo
+    elif message.document:
+        media_type = "document"
+        media_file_id = message.document.file_id
+    elif message.video:
+        media_type = "video"
+        media_file_id = message.video.file_id
+    elif message.audio:
+        media_type = "audio"
+        media_file_id = message.audio.file_id
+    elif message.voice:
+        media_type = "voice"
+        media_file_id = message.voice.file_id
+    else:
+        # Not a supported media type
+        return
+    
+    # Collect user info
+    username = tg_user.username
+    first_name = tg_user.first_name
+    last_name = tg_user.last_name
+    language_code = tg_user.language_code
+    
+    # Build admin notification message
+    # For session media, show compact "Additional Media" header
+    lines = []
+    lines.append(await get_translation("📎 <b>Additional Media</b>", lang))
+    if is_first_in_group and media_group_id:
+        lines.append(await get_translation("<i>(Album)</i>", lang))
+    lines.append(f"👤 User: <code>{tg_user.id}</code>" + (f" (@{username})" if username else ""))
+    lines.append(f"📩 Ticket: #{session['ticket_id']}")
+    
+    if media_caption:
+        lines.append("")
+        lines.append(f"📝 {media_caption}")
+    
+    admin_notification = "\n".join(lines)
+    
+    # Send to the admin who received the original support ticket
+    admin_id = session['admin_id']
+    sent = False
+    
+    try:
+        # Send media with notification as caption
+        sent_msg = None
+        if media_type == "photo":
+            sent_msg = await context.bot.send_photo(
+                chat_id=admin_id,
+                photo=media_file_id,
+                caption=admin_notification,
+                parse_mode="HTML",
+            )
+        elif media_type == "document":
+            sent_msg = await context.bot.send_document(
+                chat_id=admin_id,
+                document=media_file_id,
+                caption=admin_notification,
+                parse_mode="HTML",
+            )
+        elif media_type == "video":
+            sent_msg = await context.bot.send_video(
+                chat_id=admin_id,
+                video=media_file_id,
+                caption=admin_notification,
+                parse_mode="HTML",
+            )
+        elif media_type == "audio":
+            sent_msg = await context.bot.send_audio(
+                chat_id=admin_id,
+                audio=media_file_id,
+                caption=admin_notification,
+                parse_mode="HTML",
+            )
+        elif media_type == "voice":
+            sent_msg = await context.bot.send_voice(
+                chat_id=admin_id,
+                voice=media_file_id,
+                caption=admin_notification,
+                parse_mode="HTML",
+            )
+        
+        if sent_msg:
+            sent = True
+            # No new ticket creation - using existing ticket from session
+            
+    except Exception as e:
+        logger.error("Failed to send support media to admin %s: %s", admin_id, e)
+    
+    # Send confirmation to user only for the first file in a group
+    if is_first_in_group:
+        if sent:
+            # Calculate remaining time
+            current_time = datetime.now(timezone.utc).timestamp()
+            elapsed = current_time - session['started_at']
+            remaining = int(SESSION_TIMEOUT_SECONDS - elapsed)
+            
+            if remaining > 0:
+                msg = await get_translation(
+                    f"📎 Added to your support request.\n"
+                    f"You can send more files (expires in {remaining} sec).",
+                    lang
+                )
+            else:
+                msg = await get_translation(
+                    "📎 Added to your support request.",
+                    lang
+                )
+        else:
+            msg = await get_translation(
+                "❌ Failed to send your file. Please try again.",
+                lang
+            )
+        
+        await message.reply_text(msg, parse_mode="HTML")
+
+
 async def admin_reply_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """
     Handle admin replies to support tickets.
     When admin replies to a support message, forward the reply to the user.
+    Supports text and/or media (photo, document, video, audio, voice).
     """
     message = update.effective_message
     if message is None or message.reply_to_message is None:
@@ -1661,8 +2164,31 @@ async def admin_reply_handler(update: Update, context: ContextTypes.DEFAULT_TYPE
     if ticket is None:
         return
     
-    reply_text = message.text or ""
-    if not reply_text.strip():
+    # Extract text and media from admin's reply
+    reply_text = message.text or message.caption or ""
+    
+    # Detect media type
+    media_type = None
+    media_file_id = None
+    
+    if message.photo:
+        media_type = "photo"
+        media_file_id = message.photo[-1].file_id
+    elif message.document:
+        media_type = "document"
+        media_file_id = message.document.file_id
+    elif message.video:
+        media_type = "video"
+        media_file_id = message.video.file_id
+    elif message.audio:
+        media_type = "audio"
+        media_file_id = message.audio.file_id
+    elif message.voice:
+        media_type = "voice"
+        media_file_id = message.voice.file_id
+    
+    # If no text and no media, skip
+    if not reply_text.strip() and media_type is None:
         return
     
     # Send reply to user
@@ -1674,20 +2200,74 @@ async def admin_reply_handler(update: Update, context: ContextTypes.DEFAULT_TYPE
         msg_header = await get_translation("📬 <b>Administrator Response</b>", user_lang)
         msg_body = await get_translation("Your support request has been answered:", user_lang)
         
-        response_message = (
-            f"{msg_header}\n\n"
-            f"{msg_body}\n\n"
-            f"«{reply_text}»"
-        )
-        
-        await context.bot.send_message(
-            chat_id=ticket.user_id,
-            text=response_message,
-            parse_mode="HTML",
-        )
+        # Build response message
+        if media_type:
+            # Reply with media
+            caption_lines = [msg_header, "", msg_body]
+            if reply_text.strip():
+                caption_lines.append("")
+                caption_lines.append(f"«{reply_text}»")
+            
+            response_caption = "\n".join(caption_lines)
+            
+            # Send media with caption
+            if media_type == "photo":
+                await context.bot.send_photo(
+                    chat_id=ticket.user_id,
+                    photo=media_file_id,
+                    caption=response_caption,
+                    parse_mode="HTML",
+                )
+            elif media_type == "document":
+                await context.bot.send_document(
+                    chat_id=ticket.user_id,
+                    document=media_file_id,
+                    caption=response_caption,
+                    parse_mode="HTML",
+                )
+            elif media_type == "video":
+                await context.bot.send_video(
+                    chat_id=ticket.user_id,
+                    video=media_file_id,
+                    caption=response_caption,
+                    parse_mode="HTML",
+                )
+            elif media_type == "audio":
+                await context.bot.send_audio(
+                    chat_id=ticket.user_id,
+                    audio=media_file_id,
+                    caption=response_caption,
+                    parse_mode="HTML",
+                )
+            elif media_type == "voice":
+                await context.bot.send_voice(
+                    chat_id=ticket.user_id,
+                    voice=media_file_id,
+                    caption=response_caption,
+                    parse_mode="HTML",
+                )
+        else:
+            # Text-only reply (existing behavior)
+            response_message = (
+                f"{msg_header}\n\n"
+                f"{msg_body}\n\n"
+                f"«{reply_text}»"
+            )
+            
+            await context.bot.send_message(
+                chat_id=ticket.user_id,
+                text=response_message,
+                parse_mode="HTML",
+            )
         
         # Update ticket status
-        update_support_ticket_response(ticket.id, reply_text)
+        response_summary = f"[{media_type.upper()}] {reply_text}" if media_type else reply_text
+        update_support_ticket_response(ticket.id, response_summary)
+        
+        # Close support session for this user (if exists)
+        if ticket.user_id in active_support_sessions:
+            active_support_sessions.pop(ticket.user_id, None)
+            logger.info(f"Closed support session for user {ticket.user_id} after admin reply")
         
         # Confirm to admin
         await message.reply_text(await get_translation("✅ Reply sent to user.", admin_lang))
@@ -1695,6 +2275,28 @@ async def admin_reply_handler(update: Update, context: ContextTypes.DEFAULT_TYPE
     except Exception as e:
         logger.error("Failed to send reply to user %s: %s", ticket.user_id, e)
         await message.reply_text(await get_translation("❌ Failed to send reply: {e}", admin_lang))
+
+
+async def unknown_command_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """
+    Handle unknown commands.
+    Responds with a message telling the user the command is not recognized.
+    """
+    tg_user = update.effective_user
+    if tg_user is None:
+        return
+    
+    user = get_or_create_user(tg_user.id)
+    lang = user.language or "ru"
+    
+    msg = await get_translation(
+        "🤷 Unrecognized command.\n"
+        "Type <b>/start</b> to see the list of available commands.",
+        lang
+    )
+    
+    await update.message.reply_text(msg, parse_mode="HTML")
+
 
 
 def main() -> None:
@@ -1734,8 +2336,24 @@ def main() -> None:
     application.add_handler(CommandHandler("stats", stats_command))
     application.add_handler(CommandHandler("support", support_command))
     
-    # Reply handler for admin responses to support tickets (must be after other handlers)
-    application.add_handler(MessageHandler(filters.REPLY & filters.TEXT & ~filters.COMMAND, admin_reply_handler))
+    # Media support handlers (must be before reply handler)
+    # Handle photos, documents, videos, audio, and voice as support messages
+    # Exclude replies to prevent intercepting admin responses
+    application.add_handler(MessageHandler(
+        (filters.PHOTO | filters.Document.ALL | filters.VIDEO | filters.AUDIO | filters.VOICE) & ~filters.COMMAND & ~filters.REPLY,
+        support_media_handler
+    ))
+    
+    # Reply handler for admin responses to support tickets
+    # Updated to support both text and media replies
+    application.add_handler(MessageHandler(
+        filters.REPLY & (filters.TEXT | filters.PHOTO | filters.Document.ALL | filters.VIDEO | filters.AUDIO | filters.VOICE) & ~filters.COMMAND,
+        admin_reply_handler
+    ))
+    
+    # Unknown command handler (must be last command-related handler)
+    # Catches any command that wasn't handled by previous handlers
+    application.add_handler(MessageHandler(filters.COMMAND, unknown_command_handler))
 
     # Schedule jobs:
     # 1) Global digest job (starts immediately with configured interval)
@@ -1749,7 +2367,7 @@ def main() -> None:
         name=REMINDER_JOB_NAME,
     )
 
-    # 3) Weekly and monthly report aggregation job (once per day, first run in 5 minutes)
+    # 3) Weekly and monthly and yearly report aggregation job (once per day, first run in 5 minutes)
     application.job_queue.run_repeating(
         aggregate_reports_job,
         interval=24 * 60 * 60,

@@ -8,52 +8,171 @@ import logging
 from db import Report, get_reports_in_range, create_report
 from news_analyzer import build_html_digest_from_json
 from holidays_manager import get_holiday_emoji
+from ai_client import client
+from config import settings
 
 logger = logging.getLogger(__name__)
 
 
-def _combine_reports_dict(reports: List[Report]) -> dict:
-    """
-    We merge the JSON of several reports into a single dictionary of the same format:
-    {
-      "summary": [...],
-      "positive": [...],
-      "negative": [...],
-      "macro": [...],
-      "assets": [...]
-    }
-    """
-    combined = {
-        "summary": [],
-        "positive": [],
-        "negative": [],
-        "macro": [],
-        "assets": [],
-    }
+# Aggregation prompts for different report types
+AGGREGATION_PROMPTS = {
+    "weekly": (
+        "You're a crypto market analyst. Your input is a set of DAILY reports "
+        "from the past week, each already analyzed and structured.\n\n"
+        "Your task:\n"
+        "Analyze all the daily reports and create a WEEKLY SUMMARY that:\n"
+        "1) Identifies the main trends and themes of the week\n"
+        "2) Highlights the most significant positive developments across all days\n"
+        "3) Highlights the most significant negative developments and risks\n"
+        "4) Summarizes key macro events that affected the market\n"
+        "5) Lists the most promising assets based on the week's news (combine signals for the same asset)\n"
+        "6) Filters out noise and repetitive information - focus on what truly matters\n\n"
+        "Priority guidelines:\n"
+        "- high: Major events with lasting impact, strong trading opportunities or risks\n"
+        "- medium: Important but not critical developments\n"
+        "- low: Background information worth noting\n\n"
+    ),
+    "monthly": (
+        "You're a crypto market analyst. Your input is a set of WEEKLY reports "
+        "from the past month, each already analyzed and structured.\n\n"
+        "Your task:\n"
+        "Analyze all the weekly reports and create a MONTHLY SUMMARY that:\n"
+        "1) Identifies the main trends and themes of the month\n"
+        "2) Highlights the most significant positive developments across all weeks\n"
+        "3) Highlights the most significant negative developments and risks\n"
+        "4) Summarizes key macro events that shaped the market\n"
+        "5) Lists the most promising assets based on the month's performance (combine signals)\n"
+        "6) Focus on major developments with lasting impact, ignore short-term noise\n\n"
+        "Priority guidelines:\n"
+        "- high: Major market-moving events, significant trend changes\n"
+        "- medium: Notable developments with clear impact\n"
+        "- low: Interesting context but not immediately actionable\n\n"
+    ),
+    "annual": (
+        "You're a crypto market analyst. Your input is a set of MONTHLY reports "
+        "from the past year, each already analyzed and structured.\n\n"
+        "Your task:\n"
+        "Analyze all the monthly reports and create an ANNUAL SUMMARY that:\n"
+        "1) Identifies the major trends and themes that defined the year\n"
+        "2) Highlights the most transformative positive developments\n"
+        "3) Highlights the most significant negative events and their lasting impact\n"
+        "4) Summarizes the macro environment and key regulatory/institutional changes\n"
+        "5) Lists the year's top-performing and most promising assets\n"
+        "6) Focus on developments with structural, long-term significance\n\n"
+        "Priority guidelines:\n"
+        "- high: Paradigm-shifting events, major market cycles, critical regulatory changes\n"
+        "- medium: Significant events that shaped market sentiment\n"
+        "- low: Notable but not year-defining developments\n\n"
+    ),
+}
 
-    for r in reports:
+AGGREGATION_FORMAT_INSTRUCTIONS = (
+    "Format your answer:\n"
+    "- Answer STRICTLY in JSON format without any comments before or after.\n"
+    "- JSON structure:\n"
+    "{\n"
+    '  "summary": ["string1", "string2"],\n'
+    '  "positive": [\n'
+    '    {"text": "string", "tickers": ["BTC", "ETH"], "priority": "high"}\n'
+    "  ],\n"
+    '  "negative": [\n'
+    '    {"text": "string", "tickers": ["SOL"], "priority": "medium"}\n'
+    "  ],\n"
+    '  "macro": [\n'
+    '    {"text": "string", "tickers": [], "priority": "low"}\n'
+    "  ],\n"
+    '  "assets": [\n'
+    '    {"ticker": "BTC", "direction": "bullish", "reason": "string", "priority": "high"}\n'
+    "  ]\n"
+    "}\n"
+    "- All strings must be in English.\n"
+    "- summary: 3-7 short strings summarizing the period's key developments\n"
+    "- positive/negative/macro: lists of objects with text, tickers array, and priority\n"
+    "- assets: list of objects with ticker, direction (bullish/bearish/neutral), reason, and priority\n"
+    "- If any list is empty, return [].\n"
+    "- Be concise and focus on the most important information.\n"
+)
+
+
+async def _aggregate_reports_with_ai(
+    reports: List[Report],
+    target_kind: str,
+) -> dict:
+    """
+    Uses AI to create an intelligent summary of multiple reports.
+    Returns a dict with the same structure as daily reports.
+    """
+    if not reports:
+        return {
+            "summary": [],
+            "positive": [],
+            "negative": [],
+            "macro": [],
+            "assets": [],
+        }
+
+    # Prepare input: each report's content
+    report_texts = []
+    for idx, r in enumerate(reports, 1):
         try:
             data = json.loads(r.json_content)
+            # Format each report nicely
+            report_text = f"=== Report {idx} ({r.period_start_utc.date()} to {r.period_end_utc.date()}) ===\n"
+            report_text += json.dumps(data, ensure_ascii=False, indent=2)
+            report_texts.append(report_text)
         except Exception as e:
-            logger.exception(
-                "Failed to parse json_content for report id=%s: %s", r.id, e
-            )
+            logger.exception("Failed to parse report id=%s: %s", r.id, e)
             continue
 
-        # summary
-        if isinstance(data.get("summary"), list):
-            combined["summary"].extend(str(x) for x in data["summary"])
+    if not report_texts:
+        logger.warning("No valid reports to aggregate")
+        return {
+            "summary": [],
+            "positive": [],
+            "negative": [],
+            "macro": [],
+            "assets": [],
+        }
 
-        # positive / negative / macro / assets
-        for key in ("positive", "negative", "macro", "assets"):
-            items = data.get(key)
-            if isinstance(items, list):
-                combined[key].extend(items)
+    joined_reports = "\n\n".join(report_texts)
+    
+    # Get appropriate prompt
+    prompt = AGGREGATION_PROMPTS.get(target_kind, AGGREGATION_PROMPTS["weekly"])
+    full_instructions = prompt + AGGREGATION_FORMAT_INSTRUCTIONS
 
-    return combined
+    # Call AI
+    try:
+        resp = await client.responses.create(
+            model=settings.openai_model,
+            instructions=full_instructions,
+            input=[
+                {
+                    "role": "user",
+                    "content": [
+                        {
+                            "type": "input_text",
+                            "text": joined_reports,
+                        }
+                    ],
+                }
+            ],
+        )
+        raw_json = resp.output[0].content[0].text
+    except Exception as e:
+        logger.exception("Error calling AI for %s aggregation: %s", target_kind, e)
+        raise
+
+    # Parse JSON
+    try:
+        data = json.loads(raw_json)
+    except Exception as e:
+        logger.exception("Failed to parse JSON from AI: %s. Raw: %r", e, raw_json)
+        raise
+
+    return data
 
 
-def aggregate_reports(
+async def aggregate_reports(
     *,
     target_kind: str,      # 'weekly' or 'monthly' or 'annual'
     source_kind: str,      # 'daily' or 'weekly' or 'monthly'
@@ -64,6 +183,7 @@ def aggregate_reports(
     A general aggregation function: takes reports of source_kind over the period
     [period_start_utc, period_end_utc] and creates/returns a report of target_kind.
     If target_kind already exists for this period, simply returns it.
+    Uses AI to create an intelligent summary instead of simple concatenation.
     """
     # 1) If such a report already exists — simply return it
     existing = get_reports_in_range(target_kind, period_start_utc, period_end_utc)
@@ -82,10 +202,15 @@ def aggregate_reports(
         )
         return None
 
-    # 3) Merge JSON and build HTML using the same builder as for daily digest
-    combined_dict = _combine_reports_dict(source_reports)
-    combined_json = json.dumps(combined_dict, ensure_ascii=False)
+    # 3) Use AI to create intelligent summary
+    try:
+        combined_dict = await _aggregate_reports_with_ai(source_reports, target_kind)
+        combined_json = json.dumps(combined_dict, ensure_ascii=False)
+    except Exception as e:
+        logger.exception("Failed to aggregate reports with AI for %s: %s", target_kind, e)
+        return None
 
+    # 4) Build HTML from the AI-generated summary
     try:
         emoji = get_holiday_emoji(period_end_utc) or ""
         html_content = build_html_digest_from_json(combined_dict, emoji=emoji)
@@ -93,7 +218,7 @@ def aggregate_reports(
         logger.exception("Failed to build HTML for %s report: %s", target_kind, e)
         html_content = None
 
-    # 4) Save to the reports table
+    # 5) Save to the reports table
     return create_report(
         kind=target_kind,
         period_start_utc=period_start_utc,
@@ -102,6 +227,7 @@ def aggregate_reports(
         html_content=html_content,
         pdf_path=None,
     )
+
 
 
 def _last_full_week_period(now_utc: datetime) -> Tuple[datetime, datetime]:
@@ -159,7 +285,7 @@ def _last_full_month_period(now_utc: datetime) -> Tuple[datetime, datetime]:
     return prev_month_start, prev_month_end
 
 
-def ensure_last_weekly_report(now_utc: Optional[datetime] = None) -> Optional[Report]:
+async def ensure_last_weekly_report(now_utc: Optional[datetime] = None) -> Optional[Report]:
     """
     Ensures that there is a weekly report for the last fully completed week.
     If not, creates it from daily reports (kind='daily').
@@ -168,7 +294,7 @@ def ensure_last_weekly_report(now_utc: Optional[datetime] = None) -> Optional[Re
         now_utc = datetime.now(timezone.utc)
 
     week_start, week_end = _last_full_week_period(now_utc)
-    return aggregate_reports(
+    return await aggregate_reports(
         target_kind="weekly",
         source_kind="daily",
         period_start_utc=week_start,
@@ -176,7 +302,7 @@ def ensure_last_weekly_report(now_utc: Optional[datetime] = None) -> Optional[Re
     )
 
 
-def ensure_last_monthly_report(now_utc: Optional[datetime] = None) -> Optional[Report]:
+async def ensure_last_monthly_report(now_utc: Optional[datetime] = None) -> Optional[Report]:
     """
     Ensures that there is a monthly report for the last fully completed month.
     If not, creates it from weekly reports (kind='weekly').
@@ -185,7 +311,7 @@ def ensure_last_monthly_report(now_utc: Optional[datetime] = None) -> Optional[R
         now_utc = datetime.now(timezone.utc)
 
     month_start, month_end = _last_full_month_period(now_utc)
-    return aggregate_reports(
+    return await aggregate_reports(
         target_kind="monthly",
         source_kind="weekly",
         period_start_utc=month_start,
@@ -221,7 +347,7 @@ def _last_full_year_period(now_utc: datetime) -> Tuple[datetime, datetime]:
     return prev_year_start, this_year_start
 
 
-def ensure_last_annual_report(now_utc: Optional[datetime] = None) -> Optional[Report]:
+async def ensure_last_annual_report(now_utc: Optional[datetime] = None) -> Optional[Report]:
     """
     Ensures that there is an annual report for the last fully completed year.
     If not, creates it from monthly reports (kind='monthly').
@@ -230,7 +356,7 @@ def ensure_last_annual_report(now_utc: Optional[datetime] = None) -> Optional[Re
         now_utc = datetime.now(timezone.utc)
 
     year_start, year_end = _last_full_year_period(now_utc)
-    return aggregate_reports(
+    return await aggregate_reports(
         target_kind="annual",
         source_kind="monthly",
         period_start_utc=year_start,

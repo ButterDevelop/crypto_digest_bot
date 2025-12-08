@@ -49,6 +49,9 @@ class SupportTicket:
     status: str                      # 'open' | 'answered'
     created_at: datetime
     responded_at: Optional[datetime]
+    media_type: Optional[str]        # Type of media: 'photo', 'document', 'video', 'audio', 'voice'
+    media_file_id: Optional[str]     # Telegram file_id for forwarding
+    media_caption: Optional[str]     # Caption for media
 
 
 def _get_connection() -> sqlite3.Connection:
@@ -118,10 +121,22 @@ def init_db() -> None:
             response TEXT,
             status TEXT NOT NULL DEFAULT 'open',
             created_at TEXT NOT NULL,
-            responded_at TEXT
+            responded_at TEXT,
+            media_type TEXT,
+            media_file_id TEXT,
+            media_caption TEXT
         )
         """
     )
+
+    # Migrate existing support_tickets table to add media columns if they don't exist
+    try:
+        cur.execute("SELECT media_type FROM support_tickets LIMIT 1")
+    except sqlite3.OperationalError:
+        # Column doesn't exist, add it
+        cur.execute("ALTER TABLE support_tickets ADD COLUMN media_type TEXT")
+        cur.execute("ALTER TABLE support_tickets ADD COLUMN media_file_id TEXT")
+        cur.execute("ALTER TABLE support_tickets ADD COLUMN media_caption TEXT")
 
     conn.commit()
     conn.close()
@@ -456,6 +471,22 @@ def _row_to_support_ticket(row: sqlite3.Row) -> SupportTicket:
             return None
         return datetime.fromisoformat(value)
 
+    # Safely access media fields (may not exist in older records)
+    try:
+        media_type = row["media_type"]
+    except (KeyError, IndexError):
+        media_type = None
+    
+    try:
+        media_file_id = row["media_file_id"]
+    except (KeyError, IndexError):
+        media_file_id = None
+    
+    try:
+        media_caption = row["media_caption"]
+    except (KeyError, IndexError):
+        media_caption = None
+
     return SupportTicket(
         id=row["id"],
         user_id=row["user_id"],
@@ -470,6 +501,9 @@ def _row_to_support_ticket(row: sqlite3.Row) -> SupportTicket:
         status=row["status"],
         created_at=datetime.fromisoformat(row["created_at"]),
         responded_at=_parse_dt(row["responded_at"]),
+        media_type=media_type,
+        media_file_id=media_file_id,
+        media_caption=media_caption,
     )
 
 
@@ -482,6 +516,9 @@ def create_support_ticket(
     language_code: Optional[str] = None,
     admin_message_id: Optional[int] = None,
     admin_id: Optional[int] = None,
+    media_type: Optional[str] = None,
+    media_file_id: Optional[str] = None,
+    media_caption: Optional[str] = None,
 ) -> SupportTicket:
     """Create a new support ticket."""
     now = datetime.now(timezone.utc)
@@ -491,8 +528,9 @@ def create_support_ticket(
             """
             INSERT INTO support_tickets
                 (user_id, username, first_name, last_name, language_code,
-                 message, admin_message_id, admin_id, status, created_at)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'open', ?)
+                 message, admin_message_id, admin_id, status, created_at,
+                 media_type, media_file_id, media_caption)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'open', ?, ?, ?, ?)
             """,
             (
                 user_id,
@@ -504,6 +542,9 @@ def create_support_ticket(
                 admin_message_id,
                 admin_id,
                 now.isoformat(),
+                media_type,
+                media_file_id,
+                media_caption,
             ),
         )
         ticket_id = cur.lastrowid
@@ -523,6 +564,9 @@ def create_support_ticket(
         status="open",
         created_at=now,
         responded_at=None,
+        media_type=media_type,
+        media_file_id=media_file_id,
+        media_caption=media_caption,
     )
 
 
