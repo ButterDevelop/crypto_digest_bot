@@ -43,6 +43,9 @@ class Settings:
     # Global digest interval (minutes) — how often we send digest to users
     digest_interval_min: int = int(os.getenv("DIGEST_INTERVAL_MINUTES", "60"))
 
+    # Start hour for digest schedule (0-23 UTC) — digest grid is aligned to this hour
+    digest_start_hour: int = int(os.getenv("DIGEST_START_HOUR", "4"))
+
     # Subscription settings
     subscription_price_stars: int = int(os.getenv("SUBSCRIPTION_PRICE_STARS", "10"))
     subscription_period_days: int = int(os.getenv("SUBSCRIPTION_PERIOD_DAYS", "30"))

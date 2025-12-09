@@ -192,17 +192,17 @@ def _next_digest_run_time_utc(interval_min: int) -> datetime:
 
     Principle:
     - we take today's startTime UTC.
-    - we build a grid: 06:00, 06:00 + interval, 06:00 + 2*interval, ...
+    - we build a grid: 04:00, 04:00 + interval, 04:00 + 2*interval, ...
     - we take the nearest time from this grid, which is strictly > now.
 
     Examples:
-    - interval=60  -> runs at 06:00, 07:00, 08:00, ...
-    - interval=720 -> 06:00 and 18:00
+    - interval=60  -> runs at 04:00, 05:00, 06:00, ...
+    - interval=480 -> 04:00, 12:00 and 20:00
     """
     now = _now_utc()
     interval = timedelta(minutes=interval_min)
 
-    startTime = now.replace(hour=6, minute=0, second=0, microsecond=0)
+    startTime = now.replace(hour=settings.digest_start_hour, minute=0, second=0, microsecond=0)
     elapsed = now - startTime
 
     # how many full intervals have passed since midnight
