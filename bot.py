@@ -55,32 +55,28 @@ AGGREGATE_JOB_NAME = "aggregate_reports_job"
 
 MAX_TG_MESSAGE_LEN = 4096
 
-TOPUP_PAYLOAD_PREFIX = "TOPUP:"  # to differentiate the payment type by payload
+TOPUP_PAYLOAD_PREFIX = "TOPUP:"  # prefix to identify topup payments
 
-# Global digest interval (minutes) - can be changed via /auto_digest by admin
+# Digest interval in minutes, admins can change it with /auto_digest
 global_digest_interval_min: int = settings.digest_interval_min
 
-# Track processed media groups to avoid duplicate support tickets
-# Key: (user_id, media_group_id), Value: timestamp
-processed_media_groups: dict = {}
+# Prevent duplicate tickets from album uploads
+processed_media_groups: dict = {}  # {(user_id, media_group_id): timestamp}
 
-# Track active support sessions (user can send media after /support command)
-# Key: user_id, Value: {'ticket_id': int, 'admin_id': int, 'started_at': timestamp}
-active_support_sessions: dict = {}
+# Active /support sessions - user can attach media within timeout
+active_support_sessions: dict = {}  # {user_id: {'ticket_id', 'admin_id', 'started_at'}}
 
-# Track media groups that started with /support (to handle race condition)
-# Key: media_group_id, Value: {'user_id': int, 'admin_id': int, 'ticket_id': int, 'started_at': timestamp}
-allowed_support_media_groups: dict = {}
+# Track albums that started with /support caption (race condition fix)
+allowed_support_media_groups: dict = {}  # {media_group_id: session_data}
 
-# Track last support request time per user (to determine response type for unsolicited media)
-# Key: user_id, Value: timestamp of last /support command
-last_support_request_time: dict = {}
+# Last /support timestamp per user - for "session expired" vs "unknown command" logic
+last_support_request_time: dict = {}  # {user_id: timestamp}
 
-SESSION_TIMEOUT_SECONDS = 60  # 1 minute
-SUPPORT_CONTEXT_TIMEOUT_SECONDS = 300  # 5 minutes - time window for "session expired" message
+SESSION_TIMEOUT_SECONDS = 60  # 1 min to attach files after /support
+SUPPORT_CONTEXT_TIMEOUT_SECONDS = 300  # 5 min window for "session expired" hint
 
 
-# --- Helpers --------------------------------------------------------------
+# --- Helpers ---
 
 def _split_digest_into_messages(html_text: str, max_len: int = 3900) -> list[str]:
     """
@@ -117,9 +113,7 @@ def _split_digest_into_messages(html_text: str, max_len: int = 3900) -> list[str
     current: str = ""
 
     for sec in sections:
-        # theoretically, one section shouldn't be longer than max_len,
-        # since we limit text length in _render_blockquote_section.
-        # But just in case, let's check and send it separately.
+        # Sections should fit, but handle edge cases anyway
         if len(sec) > max_len:
             # if something went wrong, first send what we have accumulated
             if current:
@@ -146,8 +140,7 @@ def _split_digest_into_messages(html_text: str, max_len: int = 3900) -> list[str
     if current:
         messages.append(current)
 
-    # No hard-truncations [:MAX_TG_MESSAGE_LEN] here,
-    # to avoid breaking HTML tags.
+    # Don't hard-truncate here to avoid breaking HTML tags
     return messages
 
 
@@ -310,7 +303,7 @@ def _get_next_digest_run_time(context: ContextTypes.DEFAULT_TYPE) -> Optional[da
 
 
 
-# --- Jobs -----------------------------------------------------------------
+# --- Scheduled Jobs ---
 
 
 
@@ -713,13 +706,11 @@ async def cleanup_reports_job(context: ContextTypes.DEFAULT_TYPE) -> None:
         logger.info("Cleanup finished. No files were deleted.")
 
 
-# --- Command Handlers -----------------------------------------------------
+# --- Command Handlers ---
 
 
 async def _append_user_commands(lines: List[str], lang: str) -> None:
     lines.append(await get_translation("Commands:", lang))
-    # Admin commands list - mostly tech, maybe keep english or translate basic descriptions?
-    # Let's translate descriptions.
     lines.append("/start - " + await get_translation("start the bot", lang))
     lines.append("/status - " + await get_translation("show your status and subscription", lang))
     lines.append("/subscribe - " + await get_translation("subscribe to the global digest", lang))
@@ -973,17 +964,13 @@ async def digest_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
     
     # --- ADMIN BROADCAST LOGIC ---
     if user.is_admin:
-        # Ask for confirmation or just run? User said "I could manually trigger report, and it would go to people".
-        # Let's just run it and notify admin.
+        # Admin triggers broadcast - run immediately
         msg_start = await get_translation("Starting global digest broadcast...", lang)
         await update.message.reply_text(
             msg_start,
             parse_mode="HTML"
         )
-        
-        # We need to manually invoke global_digest_job logic.
-        # But global_digest_job takes `context`. 
-        # We can call it directly.
+
         await global_digest_job(context)
         return
 
@@ -1041,7 +1028,7 @@ async def check_missed_reports_job(context: ContextTypes.DEFAULT_TYPE) -> None:
     should_run_digest = False
 
     if daily_report is None:
-        # Bot just started, no reports, but users exist - can give them the first digest
+        # First run ever, generate initial digest if we have users
         users = get_all_users()
         if users:
             should_run_digest = True
@@ -1052,7 +1039,7 @@ async def check_missed_reports_job(context: ContextTypes.DEFAULT_TYPE) -> None:
 
         time_since_end = now - end
 
-        # If since the end of the period passed more than interval + buffer -> consider it missed
+        # Missed if we're past the interval + 15min buffer
         if time_since_end > (interval_td + timedelta(minutes=15)):
             should_run_digest = True
 
@@ -1061,7 +1048,7 @@ async def check_missed_reports_job(context: ContextTypes.DEFAULT_TYPE) -> None:
         await global_digest_job(context)
 
     # === 2) Weekly / Monthly ===
-    # Here everything is simpler: our ensure_last_* are already idempotent in themselves and are not tied to "today is Monday/1st"
+    # These are idempotent, safe to call anytime
     try:
         weekly = await ensure_last_weekly_report(now)
         if weekly:
@@ -1519,9 +1506,7 @@ async def language_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -
     if tg_user is None:
         return
 
-    # Build keyboard from settings.allowed_languages
-    # We might want a mapping for flags/names.
-    # Simple mapping for common languages, fallback to code.
+    # Language flags/names lookup, fallback to code if unknown
     known_langs = {
         "ar": "🇸🇦 العربية",
         "cs": "🇨🇿 Čeština",
@@ -1825,8 +1810,7 @@ async def support_media_handler(update: Update, context: ContextTypes.DEFAULT_TY
     media_caption = message.caption or ""
     media_group_session = None
     
-    # If this is a media group file WITHOUT /support caption, add small delay
-    # to allow the first file (with /support) to register the group first
+    # Small delay for album files so the first one can register the session
     if media_group_id and not media_caption.strip().startswith("/support"):
         import asyncio
         await asyncio.sleep(0.5)  # Wait for first file to register session
@@ -1979,17 +1963,15 @@ async def support_media_handler(update: Update, context: ContextTypes.DEFAULT_TY
         return
     
     
-    # Check if this is part of a media group (album) for user confirmation purposes
-    # media_group_id already defined above for media group session check
+    # Handle media groups (albums) - only show confirmation once per album
     is_first_in_group = True
     
     if media_group_id and not created_new_session_from_caption:
-        # Only check media group deduplication if NOT from /support caption
-        # (because /support caption creates session for first file, subsequent files should still be sent)
+        # Skip dedup check if session was just created from /support caption
         group_key = (tg_user.id, media_group_id)
         current_time = datetime.now(timezone.utc).timestamp()
         
-        # Clean old entries (older than 5 minutes)
+        # Cleanup stale entries
         keys_to_remove = [
             key for key, timestamp in processed_media_groups.items()
             if current_time - timestamp > 300
@@ -1997,12 +1979,12 @@ async def support_media_handler(update: Update, context: ContextTypes.DEFAULT_TY
         for key in keys_to_remove:
             processed_media_groups.pop(key, None)
         
-        # Check if this is NOT the first message in the group
         if group_key in processed_media_groups:
+            # Not the first file in this album
             logger.info(f"Processing additional file from media group for user {tg_user.id}")
             is_first_in_group = False
         else:
-            # Mark this group as processed (this is the first file)
+            # First file in album, mark as processed
             processed_media_groups[group_key] = current_time
     elif media_group_id and created_new_session_from_caption:
         # This is from /support caption - mark the group as seen now
@@ -2014,10 +1996,9 @@ async def support_media_handler(update: Update, context: ContextTypes.DEFAULT_TY
     user = get_or_create_user(tg_user.id)
     lang = user.language or "ru"
     
-    # Determine media type and file_id
+    # Get media type and file_id
     media_type = None
     media_file_id = None
-    # media_caption already defined above for /support check
     
     if message.photo:
         media_type = "photo"
@@ -2103,8 +2084,7 @@ async def support_media_handler(update: Update, context: ContextTypes.DEFAULT_TY
             )
         
         if sent_msg:
-            sent = True
-            # No new ticket creation - using existing ticket from session
+            sent = True  # attached to existing ticket
             
     except Exception as e:
         logger.error("Failed to send support media to admin %s: %s", admin_id, e)
@@ -2336,30 +2316,26 @@ def main() -> None:
     application.add_handler(CommandHandler("stats", stats_command))
     application.add_handler(CommandHandler("support", support_command))
     
-    # Media support handlers (must be before reply handler)
-    # Handle photos, documents, videos, audio, and voice as support messages
-    # Exclude replies to prevent intercepting admin responses
+    # Media support handler (must come before reply handler)
     application.add_handler(MessageHandler(
         (filters.PHOTO | filters.Document.ALL | filters.VIDEO | filters.AUDIO | filters.VOICE) & ~filters.COMMAND & ~filters.REPLY,
         support_media_handler
     ))
     
-    # Reply handler for admin responses to support tickets
-    # Updated to support both text and media replies
+    # Admin reply handler (text + media)
     application.add_handler(MessageHandler(
         filters.REPLY & (filters.TEXT | filters.PHOTO | filters.Document.ALL | filters.VIDEO | filters.AUDIO | filters.VOICE) & ~filters.COMMAND,
         admin_reply_handler
     ))
     
-    # Unknown command handler (must be last command-related handler)
-    # Catches any command that wasn't handled by previous handlers
+    # Catch-all for unknown commands (must be last)
     application.add_handler(MessageHandler(filters.COMMAND, unknown_command_handler))
 
-    # Schedule jobs:
-    # 1) Global digest job (starts immediately with configured interval)
+    # Schedule jobs
+    # 1) Digest job
     _schedule_digest_job(application.job_queue)
 
-    # 2) Daily reminder job (once per 24 hours, first run in 1 hour)
+    # 2) Subscription reminder (daily)
     application.job_queue.run_repeating(
         subscription_reminder_job,
         interval=24 * 60 * 60,
@@ -2367,7 +2343,7 @@ def main() -> None:
         name=REMINDER_JOB_NAME,
     )
 
-    # 3) Weekly and monthly and yearly report aggregation job (once per day, first run in 5 minutes)
+    # 3) Weekly/monthly/annual aggregation (daily)
     application.job_queue.run_repeating(
         aggregate_reports_job,
         interval=24 * 60 * 60,
@@ -2375,19 +2351,19 @@ def main() -> None:
         name=AGGREGATE_JOB_NAME,
     )
 
-    # 4) Auto-recovery job (check for missed digests every 30 minutes)
+    # 4) Missed digest recovery (every 30 min)
     application.job_queue.run_repeating(
         check_missed_reports_job,
         interval=30 * 60,
-        first=60, # First check relatively soon
+        first=60,  # start soon
         name="check_missed_reports_job",
     )
 
-    # 5) PDF Cleanup Job (once per day)
+    # 5) PDF cleanup (daily)
     application.job_queue.run_repeating(
         cleanup_reports_job,
         interval=24 * 60 * 60,
-        first=60 * 60, # Start in 1 hour
+        first=60 * 60,
         name="cleanup_reports_job",
     )
 

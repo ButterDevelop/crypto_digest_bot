@@ -12,22 +12,20 @@ class Holiday:
     end_day: int
 
     def is_active(self, date: datetime) -> bool:
-        # Simple case: start and end in same year
+        # Same year case
         if self.start_month < self.end_month or (self.start_month == self.end_month and self.start_day <= self.end_day):
              start_date = date.replace(month=self.start_month, day=self.start_day)
              end_date = date.replace(month=self.end_month, day=self.end_day)
              return start_date.date() <= date.date() <= end_date.date()
         else:
-            # Cross-year case (e.g. Dec 25 to Jan 5)
-            # If current month is start_month or later, treat as end of year
+            # Cross-year case (Dec 25 to Jan 5 etc)
             if date.month >= self.start_month:
                 start_date = date.replace(month=self.start_month, day=self.start_day)
-                # end date is in next year, so we check if date >= start
+                # End is next year, just check >= start
                 return date.date() >= start_date.date()
-            # If current month is end_month or earlier, treat as start of year
             elif date.month <= self.end_month:
                 end_date = date.replace(month=self.end_month, day=self.end_day)
-                # start date was in prev year, so we check if date <= end
+                # Start was last year, just check <= end
                 return date.date() <= end_date.date()
             return False
 

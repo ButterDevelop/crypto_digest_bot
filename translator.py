@@ -19,13 +19,8 @@ async def get_translation(text: str, target_lang: str) -> str:
     
     lang = target_lang.split("-")[0].lower()
     
-    # If lang is same as default source, maybe skip? 
-    # But source is mixed. 
-    # Let's assume user knows what they are doing.
-    
+    # Skip unsupported languages
     if lang not in settings.allowed_languages:
-        # If language is not in allowed list, return original text.
-        # This prevents translating to random languages if not configured.
         return text
 
     cached = get_cached_translation(text, lang)

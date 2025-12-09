@@ -14,7 +14,7 @@ from holidays_manager import get_holiday_emoji
 
 logger = logging.getLogger(__name__)
 
-# CSS Styles for the PDF
+# PDF styles
 CSS_STYLE = """
 @page {
     size: A4;
@@ -165,7 +165,7 @@ h2 {
 """
 
 def _build_html_content(data: Dict, period_str: str, labels: Dict[str, str]) -> str:
-    # 1. Parse data
+    # Parse report data
     summary  = data.get("summary", [])
     positive = data.get("positive", [])
     negative = data.get("negative", [])
@@ -174,7 +174,7 @@ def _build_html_content(data: Dict, period_str: str, labels: Dict[str, str]) -> 
     
     lbl = lambda k, d: labels.get(k, d)
 
-    # 2. Build HTML parts
+    # Build HTML
     html_parts = []
     
     # Header
@@ -282,9 +282,8 @@ def generate_pdf_report(
         if emoji:
             if labels is None:
                 labels = {}
-            # Prepend emoji to title
+            # Add emoji with cross-platform font fallback
             base_title = labels.get("digest_title", "Crypto Digest")
-            # Force cross-platform emoji font fallback (Windows, macOS, Linux)
             labels["digest_title"] = (
                 f'<span style="font-family: \'Segoe UI Emoji\', \'Segoe UI Symbol\', \'Apple Color Emoji\', \'Noto Color Emoji\', sans-serif;">'
                 f'{emoji}</span> {base_title}'
@@ -307,7 +306,7 @@ def generate_pdf_report(
         
         logger.info(f"PDF generated successfully: {output_path}")
         
-        # Update DB only if requested or if it's the main report (no suffix)
+        # Update DB if requested or if it's the primary report
         if save_to_db or not lang_suffix:
             update_report_pdf_path(report.id, output_path)
         

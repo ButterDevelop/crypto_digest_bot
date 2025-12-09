@@ -14,7 +14,7 @@ from config import settings
 logger = logging.getLogger(__name__)
 
 
-# Aggregation prompts for different report types
+# AI prompts for aggregating reports
 AGGREGATION_PROMPTS = {
     "weekly": (
         "You're a crypto market analyst. Your input is a set of DAILY reports "
@@ -111,7 +111,7 @@ async def _aggregate_reports_with_ai(
             "assets": [],
         }
 
-    # Prepare input: each report's content
+    # Format each report nicely for the AI
     report_texts = []
     for idx, r in enumerate(reports, 1):
         try:
@@ -136,11 +136,11 @@ async def _aggregate_reports_with_ai(
 
     joined_reports = "\n\n".join(report_texts)
     
-    # Get appropriate prompt
+    # Pick the right prompt and call AI
     prompt = AGGREGATION_PROMPTS.get(target_kind, AGGREGATION_PROMPTS["weekly"])
     full_instructions = prompt + AGGREGATION_FORMAT_INSTRUCTIONS
 
-    # Call AI
+    # Make the API call
     try:
         resp = await client.responses.create(
             model=settings.openai_model,
@@ -162,7 +162,7 @@ async def _aggregate_reports_with_ai(
         logger.exception("Error calling AI for %s aggregation: %s", target_kind, e)
         raise
 
-    # Parse JSON
+    # Parse the response
     try:
         data = json.loads(raw_json)
     except Exception as e:
@@ -185,12 +185,12 @@ async def aggregate_reports(
     If target_kind already exists for this period, simply returns it.
     Uses AI to create an intelligent summary instead of simple concatenation.
     """
-    # 1) If such a report already exists — simply return it
+    # 1) Already exists? Return it
     existing = get_reports_in_range(target_kind, period_start_utc, period_end_utc)
     if existing:
         return existing[0]
 
-    # 2) Get source reports
+    # 2) Get source reports for aggregation
     source_reports = get_reports_in_range(source_kind, period_start_utc, period_end_utc)
     if not source_reports:
         logger.info(
@@ -202,7 +202,7 @@ async def aggregate_reports(
         )
         return None
 
-    # 3) Use AI to create intelligent summary
+    # 3) Use AI to summarize
     try:
         combined_dict = await _aggregate_reports_with_ai(source_reports, target_kind)
         combined_json = json.dumps(combined_dict, ensure_ascii=False)
@@ -210,7 +210,7 @@ async def aggregate_reports(
         logger.exception("Failed to aggregate reports with AI for %s: %s", target_kind, e)
         return None
 
-    # 4) Build HTML from the AI-generated summary
+    # 4) Build HTML from summary
     try:
         emoji = get_holiday_emoji(period_end_utc) or ""
         html_content = build_html_digest_from_json(combined_dict, emoji=emoji)
@@ -218,7 +218,7 @@ async def aggregate_reports(
         logger.exception("Failed to build HTML for %s report: %s", target_kind, e)
         html_content = None
 
-    # 5) Save to the reports table
+    # 5) Save and return
     return create_report(
         kind=target_kind,
         period_start_utc=period_start_utc,

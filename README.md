@@ -25,8 +25,10 @@ A powerful Telegram bot that aggregates cryptocurrency news from multiple channe
 - Users choose their preferred mode via `/digest_mode`
 
 ### 📬 Support System
-- **Support Tickets** - users can send messages to support via `/support`
-- **Admin Replies** - admins can reply to support tickets (just reply to the message)
+- **Support Tickets** - users send messages via `/support <message>`
+- **Media Attachments** - users can attach photos, documents, videos within 1 minute after /support
+- **Album Support** - send multiple files at once as a media group
+- **Admin Replies** - admins reply to tickets (text or media) by replying to the message
 
 ### 🌐 Multi-language Support
 - Interface and digests can be translated to multiple languages
@@ -150,6 +152,7 @@ OPENAI_MODEL=gpt-4o-mini       # Or: gpt-4, gpt-3.5-turbo, deepseek-chat
 
 # === Digest Schedule ===
 DIGEST_INTERVAL_MINUTES=720    # Default: every 12 hours
+DIGEST_START_HOUR=4            # UTC hour (0-23) - digest grid alignment
 
 # === Subscription Pricing ===
 SUBSCRIPTION_PRICE_STARS=10    # Cost in Telegram Stars
@@ -198,7 +201,7 @@ The bot will:
 | `/digest` | Request an immediate personal digest (uses free trial or subscription) |
 | `/digest_mode` | Switch between PDF and message delivery |
 | `/language` | Change interface and digest language |
-| `/support` | Contact support |
+| `/support <message>` | Send a support message (attach media within 1 min) |
 
 ### Admin Commands
 
@@ -247,6 +250,9 @@ Stores generated digests (daily, weekly, monthly, annual) with JSON content and 
 
 ### `translations`
 Caches translated strings to reduce API calls.
+
+### `support_tickets`
+Stores support requests with user info, admin responses, and optional media attachments.
 
 ---
 

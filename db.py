@@ -129,11 +129,10 @@ def init_db() -> None:
         """
     )
 
-    # Migrate existing support_tickets table to add media columns if they don't exist
+    # Add media columns if missing (migration for old DBs)
     try:
         cur.execute("SELECT media_type FROM support_tickets LIMIT 1")
     except sqlite3.OperationalError:
-        # Column doesn't exist, add it
         cur.execute("ALTER TABLE support_tickets ADD COLUMN media_type TEXT")
         cur.execute("ALTER TABLE support_tickets ADD COLUMN media_file_id TEXT")
         cur.execute("ALTER TABLE support_tickets ADD COLUMN media_caption TEXT")
@@ -471,7 +470,7 @@ def _row_to_support_ticket(row: sqlite3.Row) -> SupportTicket:
             return None
         return datetime.fromisoformat(value)
 
-    # Safely access media fields (may not exist in older records)
+    # Handle missing media fields in old records
     try:
         media_type = row["media_type"]
     except (KeyError, IndexError):

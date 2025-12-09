@@ -31,7 +31,7 @@ def _render_blockquote_section(title: str, lines: List[str]) -> str:
 
     text = "\n".join(clean_lines)
     escaped = html.escape(text)
-    # Let's limit the length of one section so that it fits into the message
+    # Truncate long sections to fit Telegram limits
     if len(escaped) > 3000:
         escaped = escaped[:3000] + "…"
 
@@ -259,7 +259,7 @@ def build_html_digest_from_json(data: Dict, emoji: str = "") -> str:
     return "\n\n".join(sections)
 
 
-# Prompt: ask for strict JSON in English with 5 sections
+# Main prompt for the AI: get strict JSON in English
 INSTRUCTIONS = (
     "You're a crypto market analyst. Your input is raw messages from"
     "telegram channels with news about crypto currencies.\n\n"
@@ -336,7 +336,7 @@ async def build_digest(
     if not posts:
         return "There were no important news items found in the monitored channels for the selected period.", None
 
-    # Collecting raw text messages
+    # Collect raw posts into a single string
     raw_messages: list[str] = []
     for p in posts:
         ch = p.get("channel") or p.get("channel_name") or ""
@@ -346,7 +346,7 @@ async def build_digest(
 
     joined = "\n\n---\n\n".join(raw_messages)
 
-    # OpenAI call
+    # Call OpenAI
     try:
         resp = await client.responses.create(
             model=settings.openai_model,
@@ -368,14 +368,14 @@ async def build_digest(
         logger.exception("Error calling OpenAI for digest: %s", e)
         return "Error calling OpenAI, digest could not be built.", None
 
-    # JSON parsing
+    # Parse JSON response
     try:
         data = json.loads(raw_json)
     except Exception as e:
         logger.exception("Failed to parse JSON from model: %s. Raw: %r", e, raw_json)
         return "Model returned invalid JSON, digest could not be built.", None
 
-    # HTML building
+    # Build HTML output
     try:
         emoji = ""
         if period_end_utc:
@@ -386,7 +386,7 @@ async def build_digest(
         logger.exception("Error building HTML digest from JSON: %s", e)
         return "Error building HTML digest from JSON, digest could not be built.", None
 
-    # Save report to DB (optional)
+    # Optionally save to DB
     report = None
     if save_report and period_start_utc and period_end_utc:
         try:
