@@ -143,8 +143,18 @@ CHANNELS=crypto_news,bitcoin_updates,defi_daily
 MAX_HOURS=12                   # How far back to look for posts
 MAX_POSTS_PER_CHANNEL=40       # Max posts to fetch per channel
 
-# === AI Model ===
-OPENAI_MODEL=gpt-4o-mini       # Or: gpt-4, gpt-3.5-turbo, deepseek-chat
+# === AI Model Configuration ===
+# Provider can be "openai" (default) or "deepseek"
+LLM_PROVIDER=openai
+
+# --- OpenAI Settings ---
+OPENAI_MODEL=gpt-4.1-mini
+
+# --- DeepSeek Settings ---
+# Required only if LLM_PROVIDER=deepseek
+DEEPSEEK_API_KEY=sk-xxxxxxxxxxxxxxxxxxxxxxxx
+DEEPSEEK_BASE_URL=https://api.deepseek.com
+DEEPSEEK_MODEL=deepseek-chat
 
 # === Optional: Proxy for OpenAI ===
 # OPENAI_PROXY=http://127.0.0.1:8080
@@ -201,7 +211,7 @@ The bot will:
 | `/digest` | Request an immediate personal digest (uses free trial or subscription) |
 | `/digest_mode` | Switch between PDF and message delivery |
 | `/language` | Change interface and digest language |
-| `/support <message>` | Send a support message (attach media within 1 min) |
+| `/support <message>` | Send a support message (attach media within 1 min or immediately) |
 
 ### Admin Commands
 
@@ -276,15 +286,12 @@ HOLIDAYS: List[Holiday] = [
 
 Edit the `CSS_STYLE` constant in `pdf_renderer.py` to customize colors, fonts, and layout.
 
-### Using DeepSeek or Other APIs
+### Using DeepSeek
+The bot has native support for DeepSeek. To switch from OpenAI:
 
-The bot works with any OpenAI-compatible API. Just set:
-
-```ini
-OPENAI_API_KEY=your-deepseek-key
-OPENAI_MODEL=deepseek-chat
-# If using a custom endpoint, you may need to modify ai_client.py
-```
+1. Set `LLM_PROVIDER=deepseek` in your `.env` file.
+2. Provide your API key in `DEEPSEEK_API_KEY`.
+3. (Optional) Customize `DEEPSEEK_MODEL` and `DEEPSEEK_BASE_URL` if needed.
 
 ---
 

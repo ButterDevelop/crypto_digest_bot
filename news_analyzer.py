@@ -334,7 +334,10 @@ async def build_digest(
     """
 
     if not posts:
-        return "There were no important news items found in the monitored channels for the selected period.", None
+        return await get_translation(
+            "🛏 There were no important news items found in the monitored channels for now.", 
+            lang
+        ), None
 
     # Collect raw posts into a single string
     raw_messages: list[str] = []
@@ -346,27 +349,40 @@ async def build_digest(
 
     joined = "\n\n---\n\n".join(raw_messages)
 
-    # Call OpenAI
+    # Call AI
     try:
-        resp = await client.responses.create(
-            model=settings.openai_model,
-            instructions=INSTRUCTIONS,
-            input=[
-                {
-                    "role": "user",
-                    "content": [
-                        {
-                            "type": "input_text",
-                            "text": joined,
-                        }
-                    ],
-                }
-            ],
-        )
-        raw_json = resp.output[0].content[0].text
+        if settings.llm_provider == "deepseek":
+            # DeepSeek standard API usage
+            resp = await client.chat.completions.create(
+                model=settings.deepseek_model,
+                messages=[
+                    {"role": "system", "content": INSTRUCTIONS},
+                    {"role": "user", "content": joined},
+                ],
+                response_format={"type": "json_object"},
+            )
+            raw_json = resp.choices[0].message.content
+        else:
+            # Existing OpenAI usage (custom/beta endpoint?)
+            resp = await client.responses.create(
+                model=settings.openai_model,
+                instructions=INSTRUCTIONS,
+                input=[
+                    {
+                        "role": "user",
+                        "content": [
+                            {
+                                "type": "input_text",
+                                "text": joined,
+                            }
+                        ],
+                    }
+                ],
+            )
+            raw_json = resp.output[0].content[0].text
     except Exception as e:
-        logger.exception("Error calling OpenAI for digest: %s", e)
-        return "Error calling OpenAI, digest could not be built.", None
+        logger.exception("Error calling LLM (%s) for digest: %s", settings.llm_provider, e)
+        return "Error calling AI, digest could not be built.", None
 
     # Parse JSON response
     try:

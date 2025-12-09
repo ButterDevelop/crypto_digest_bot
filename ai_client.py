@@ -9,7 +9,15 @@ from config import settings
 # Build HTTP client for OpenAI with optional proxy from .env
 _http_client: Optional[httpx.AsyncClient] = None
 
-if settings.openai_proxy:
+if settings.llm_provider == "deepseek":
+    # DeepSeek typically doesn't need a proxy if checking from most server locations,
+    # but we can respect HTTP_PROXY env var if set, or add proxy logic if needed.
+    # For now, simplest init:
+    client = AsyncOpenAI(
+        api_key=settings.deepseek_api_key,
+        base_url=settings.deepseek_base_url,
+    )
+elif settings.openai_proxy:
     _http_client = httpx.AsyncClient(
         proxy=settings.openai_proxy,
         timeout=30.0,

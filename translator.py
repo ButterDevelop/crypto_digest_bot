@@ -43,8 +43,10 @@ async def _fetch_translation(text: str, lang: str) -> str:
         "Return ONLY the translated text, no markdown block."
     )
     
+    model = settings.deepseek_model if settings.llm_provider == "deepseek" else settings.openai_model
+    
     response = await client.chat.completions.create(
-        model=settings.openai_model,
+        model=model,
         messages=[
             {"role": "system", "content": system_instruction},
             {"role": "user", "content": text},

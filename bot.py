@@ -334,7 +334,7 @@ async def _send_report_to_user(
     # If no data (no news), send translated "No news" message
     if not data:
         msg = await get_translation(
-            "There were no important news items found in the monitored channels for the selected period.", 
+            "🛏 There were no important news items found in the monitored channels for now.", 
             lang
         )
         await context.bot.send_message(

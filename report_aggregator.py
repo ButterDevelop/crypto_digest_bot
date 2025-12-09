@@ -142,22 +142,33 @@ async def _aggregate_reports_with_ai(
 
     # Make the API call
     try:
-        resp = await client.responses.create(
-            model=settings.openai_model,
-            instructions=full_instructions,
-            input=[
-                {
-                    "role": "user",
-                    "content": [
-                        {
-                            "type": "input_text",
-                            "text": joined_reports,
-                        }
-                    ],
-                }
-            ],
-        )
-        raw_json = resp.output[0].content[0].text
+        if settings.llm_provider == "deepseek":
+             resp = await client.chat.completions.create(
+                model=settings.deepseek_model,
+                messages=[
+                    {"role": "system", "content": full_instructions},
+                    {"role": "user", "content": joined_reports},
+                ],
+                response_format={"type": "json_object"},
+            )
+             raw_json = resp.choices[0].message.content
+        else:
+            resp = await client.responses.create(
+                model=settings.openai_model,
+                instructions=full_instructions,
+                input=[
+                    {
+                        "role": "user",
+                        "content": [
+                            {
+                                "type": "input_text",
+                                "text": joined_reports,
+                            }
+                        ],
+                    }
+                ],
+            )
+            raw_json = resp.output[0].content[0].text
     except Exception as e:
         logger.exception("Error calling AI for %s aggregation: %s", target_kind, e)
         raise

@@ -40,6 +40,14 @@ class Settings:
     # OpenAI model
     openai_model: str = os.getenv("OPENAI_MODEL", "gpt-4.1-mini")
 
+    # LLM Provider
+    llm_provider: str = os.getenv("LLM_PROVIDER", "openai").lower().strip()
+
+    # DeepSeek
+    deepseek_api_key: str = os.getenv("DEEPSEEK_API_KEY", "")
+    deepseek_base_url: str = os.getenv("DEEPSEEK_BASE_URL", "https://api.deepseek.com")
+    deepseek_model: str = os.getenv("DEEPSEEK_MODEL", "deepseek-chat")
+
     # Global digest interval (minutes) — how often we send digest to users
     digest_interval_min: int = int(os.getenv("DIGEST_INTERVAL_MINUTES", "60"))
 
@@ -70,8 +78,11 @@ settings = Settings()
 if not settings.telegram_bot_token:
     raise RuntimeError("TELEGRAM_BOT_TOKEN is not set in .env")
 
-if not settings.openai_api_key:
+if not settings.openai_api_key and settings.llm_provider == "openai":
     raise RuntimeError("OPENAI_API_KEY is not set in .env")
+
+if settings.llm_provider == "deepseek" and not settings.deepseek_api_key:
+    raise RuntimeError("DEEPSEEK_API_KEY is not set in .env (required for deepseek provider)")
 
 if not settings.channels:
     raise RuntimeError("CHANNELS is empty or not set in .env")
