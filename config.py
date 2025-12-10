@@ -18,6 +18,14 @@ def _parse_channels(raw: str) -> Tuple[str, ...]:
     )
 
 
+def _parse_launch_times(raw: str) -> Tuple[str, ...]:
+    return tuple(
+        t.strip()
+        for t in raw.split(",")
+        if t.strip()
+    )
+
+
 @dataclass(frozen=True)
 class Settings:
     telegram_bot_token: str = os.getenv("TELEGRAM_BOT_TOKEN", "")
@@ -53,6 +61,12 @@ class Settings:
 
     # Start hour for digest schedule (0-23 UTC) — digest grid is aligned to this hour
     digest_start_hour: int = int(os.getenv("DIGEST_START_HOUR", "4"))
+
+    # Specific launch times (UTC HH:MM) like "08:00,16:00,23:59"
+    # If set, overrides DIGEST_INTERVAL_MINUTES and DIGEST_START_HOUR
+    digest_launch_times: Tuple[str, ...] = _parse_launch_times(
+        os.getenv("DIGEST_LAUNCH_TIMES", "")
+    )
 
     # Subscription settings
     subscription_price_stars: int = int(os.getenv("SUBSCRIPTION_PRICE_STARS", "10"))

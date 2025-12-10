@@ -3,7 +3,7 @@ from __future__ import annotations
 import asyncio
 import os
 import logging
-from datetime import datetime, timezone, timedelta
+from datetime import datetime, timezone, timedelta, time
 from typing import Optional, List
 
 from telegram import Update, LabeledPrice, InlineKeyboardButton, InlineKeyboardMarkup
@@ -298,8 +298,18 @@ def _get_next_digest_run_time(context: ContextTypes.DEFAULT_TYPE) -> Optional[da
     jobs = context.job_queue.get_jobs_by_name(DIGEST_JOB_NAME)
     if not jobs:
         return None
-    job = jobs[0]
-    return job.next_t.replace(tzinfo=timezone.utc)
+    
+    # If multiple jobs (e.g. run_daily for multiple times), find the earliest next_t
+    next_times = []
+    for job in jobs:
+        if job.next_t:
+             next_times.append(job.next_t)
+            
+    if not next_times:
+        return None
+        
+    earliest = min(next_times)
+    return earliest.replace(tzinfo=timezone.utc)
 
 
 
@@ -422,7 +432,46 @@ async def global_digest_job(context: ContextTypes.DEFAULT_TYPE) -> None:
         return
 
     period_end_utc = now
-    period_start_utc = period_end_utc - timedelta(minutes=global_digest_interval_min)
+    
+    # Calculate period start
+    if settings.digest_launch_times:
+        # Dynamic Period: find previous scheduled time
+        # 1. Expand schedule to Today and Yesterday
+        today_str = now.strftime("%Y-%m-%d")
+        yest_str = (now - timedelta(days=1)).strftime("%Y-%m-%d")
+        
+        candidates = []
+        for d_str in (yest_str, today_str):
+            for t_str in settings.digest_launch_times:
+                try:
+                    dt_str = f"{d_str} {t_str}"
+                    # naive
+                    dt = datetime.strptime(dt_str, "%Y-%m-%d %H:%M")
+                    # make utc
+                    dt = dt.replace(tzinfo=timezone.utc)
+                    candidates.append(dt)
+                except ValueError:
+                    pass
+        
+        candidates.sort()
+        
+        # Filter candidates <= now (allowing small buffer for execution delay e.g. 5 mins?)
+        # Actually strictly <= now is fine if job runs exactly on time or slightly later.
+        valid = [c for c in candidates if c <= now]
+        
+        if len(valid) >= 2:
+            # valid[-1] is roughly "current trigger time"
+            # valid[-2] is "previous trigger time"
+            period_start_utc = valid[-2]
+            logger.info(f"Dynamic period calculation: Start={period_start_utc}, End={period_end_utc} (Current trigger={valid[-1]})")
+        else:
+            # Fallback if weirdness (e.g. first run of getting data ever?)
+            # Default to 24h lookup or defined interval
+            period_start_utc = period_end_utc - timedelta(minutes=global_digest_interval_min)
+            logger.warning("Dynamic period fallback: could not find previous slot, using default interval.")
+    else:
+        # Fixed Interval
+        period_start_utc = period_end_utc - timedelta(minutes=global_digest_interval_min)
 
     try:
         # report contains the canonical (RU) data
@@ -534,6 +583,27 @@ def _schedule_digest_job(job_queue) -> None:
     for job in job_queue.get_jobs_by_name(DIGEST_JOB_NAME):
         job.schedule_removal()
 
+    # Priority 1: Specific launch times
+    if settings.digest_launch_times:
+        valid_times = []
+        for t_str in settings.digest_launch_times:
+             try:
+                 hh, mm = t_str.split(":")
+                 valid_times.append(time(hour=int(hh), minute=int(mm), tzinfo=timezone.utc))
+             except ValueError:
+                 logger.error(f"Invalid time format in DIGEST_LAUNCH_TIMES: {t_str}")
+        
+        if valid_times:
+            for t_val in valid_times:
+                job_queue.run_daily(
+                    global_digest_job,
+                    time=t_val,
+                    name=DIGEST_JOB_NAME
+                )
+            logger.info(f"Scheduled global digest job at specific times (UTC): {settings.digest_launch_times}")
+            return
+
+    # Priority 2: Interval based
     interval_min = global_digest_interval_min
     interval_sec = interval_min * 60
 
@@ -747,8 +817,13 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         lines.append(f"- <b>@{ch}</b>")
     lines.append("")
     
-    msg_auto = await get_translation("⏱️ Auto-digest is currently set to run every", lang)
-    lines.append(f"{msg_auto} <code>{global_digest_interval_min}</code> min.")
+    if settings.digest_launch_times:
+        msg_auto = await get_translation("⏱️ Auto-digest is set to specific launch times (UTC):", lang)
+        times_str = ", ".join(settings.digest_launch_times)
+        lines.append(f"{msg_auto} <code>{times_str}</code>")
+    else:
+        msg_auto = await get_translation("⏱️ Auto-digest is currently set to run every", lang)
+        lines.append(f"{msg_auto} <code>{global_digest_interval_min}</code> min.")
 
     # Next digest info
     next_run = _get_next_digest_run_time(context)
@@ -1224,6 +1299,11 @@ async def auto_digest(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
         )
         return
 
+    if settings.digest_launch_times:
+         msg_warn = await get_translation("⚠️ Specific launch times are configured in .env (DIGEST_LAUNCH_TIMES). auto_digest command is disabled/ignored.", lang)
+         await update.message.reply_text(msg_warn)
+         return
+
     global global_digest_interval_min
 
     try:
@@ -1271,6 +1351,14 @@ async def start_auto_digest(update: Update, context: ContextTypes.DEFAULT_TYPE) 
             disable_web_page_preview=True,
         )
         return
+
+    if settings.digest_launch_times:
+         # Just verify it is scheduled
+         _schedule_digest_job(context.job_queue)
+         msg_started = await get_translation("Global auto-digest scheduled at specific times:", lang)
+         times_str = ", ".join(settings.digest_launch_times)
+         await update.message.reply_text(f"{msg_started} {times_str} (UTC).")
+         return
 
     _schedule_digest_job(context.job_queue)
     

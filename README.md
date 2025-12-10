@@ -164,6 +164,9 @@ DEEPSEEK_MODEL=deepseek-chat
 DIGEST_INTERVAL_MINUTES=720    # Default: every 12 hours
 DIGEST_START_HOUR=4            # UTC hour (0-23) - digest grid alignment
 
+# Specific launch times (UTC). If enabled, valid times override DIGEST_INTERVAL_MINUTES.
+# DIGEST_LAUNCH_TIMES=08:00,16:00,23:59
+
 # === Subscription Pricing ===
 SUBSCRIPTION_PRICE_STARS=10    # Cost in Telegram Stars
 SUBSCRIPTION_PERIOD_DAYS=30    # Subscription duration
