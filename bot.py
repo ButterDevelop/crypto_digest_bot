@@ -1102,21 +1102,67 @@ async def check_missed_reports_job(context: ContextTypes.DEFAULT_TYPE) -> None:
 
     should_run_digest = False
 
-    if daily_report is None:
-        # First run ever, generate initial digest if we have users
-        users = get_all_users()
-        if users:
-            should_run_digest = True
+    today_str = now.strftime("%Y-%m-%d")
+    yest_str = (now - timedelta(days=1)).strftime("%Y-%m-%d")
+
+    if settings.digest_launch_times:
+        # Identify all past scheduled slots (Yesterday and Today)
+        past_slots = []
+        for d_str in (yest_str, today_str):
+            for t_str in settings.digest_launch_times:
+                try:
+                    dt_str = f"{d_str} {t_str}"
+                    dt_parsed = datetime.strptime(dt_str, "%Y-%m-%d %H:%M").replace(tzinfo=timezone.utc)
+                    if dt_parsed <= now:
+                        past_slots.append(dt_parsed)
+                except ValueError:
+                    pass
+        
+        past_slots.sort()
+        
+        if not past_slots:
+            should_run_digest = False
+        else:
+            # The most recent scheduled time that *should* have happened
+            last_scheduled_run = past_slots[-1]
+            
+            # Check if we have a report covering this slot
+            if daily_report is None:
+                if get_all_users():
+                     should_run_digest = True
+            else:
+                last_report_end = daily_report.period_end_utc
+                if last_report_end.tzinfo is None:
+                    last_report_end = last_report_end.replace(tzinfo=timezone.utc)
+                # If the last report is OLDER than the scheduled run time (with a small margin of error?), 
+                # then we missed the schedule.
+                # E.g. Scheduled 07:00. Last report Yesterday 20:00. -> Missed.
+                # E.g. Scheduled 07:00. Last report Today 04:00 (Manual). -> Missed.
+                # E.g. Scheduled 07:00. Last report Today 07:01. -> Not missed.
+                if last_report_end < last_scheduled_run:                 
+                    if (now - last_scheduled_run).total_seconds() > 15 * 60:
+                        should_run_digest = True
+                        logger.warning(
+                            f"Missed specific digest at {last_scheduled_run}, last report was {last_report_end}. Triggering recovery."
+                        )
+
     else:
-        end = daily_report.period_end_utc
-        if end.tzinfo is None:
-            end = end.replace(tzinfo=timezone.utc)
+        # --- Interval Mode (Legacy) ---
+        if daily_report is None:
+            # First run ever, generate initial digest if we have users
+            users = get_all_users()
+            if users:
+                should_run_digest = True
+        else:
+            end = daily_report.period_end_utc
+            if end.tzinfo is None:
+                end = end.replace(tzinfo=timezone.utc)
 
-        time_since_end = now - end
+            time_since_end = now - end
 
-        # Missed if we're past the interval + 15min buffer
-        if time_since_end > (interval_td + timedelta(minutes=15)):
-            should_run_digest = True
+            # Missed if we're past the interval + 15min buffer
+            if time_since_end > (interval_td + timedelta(minutes=15)):
+                should_run_digest = True
 
     if should_run_digest:
         logger.warning("Auto-recovery: triggering global digest now.")
