@@ -3,7 +3,7 @@ from __future__ import annotations
 
 import sqlite3
 from dataclasses import dataclass
-from datetime import datetime, date, timezone
+from datetime import datetime, date, timezone, timedelta
 from typing import Optional, List, Dict, Any
 
 from config import settings
@@ -31,6 +31,7 @@ class Report:
     json_content: str
     html_content: Optional[str]
     pdf_path: Optional[str]
+    is_sent: bool
     created_at: datetime
 
 
@@ -90,10 +91,33 @@ def init_db() -> None:
             json_content TEXT NOT NULL,
             html_content TEXT,
             pdf_path TEXT,
+            is_sent INTEGER NOT NULL DEFAULT 0,
             created_at TEXT NOT NULL
         )
         """
     )
+    
+    # Migration: Add is_sent column if it doesn't exist
+    try:
+        cur.execute("SELECT is_sent FROM reports LIMIT 1")
+    except sqlite3.OperationalError:
+        cur.execute("ALTER TABLE reports ADD COLUMN is_sent INTEGER NOT NULL DEFAULT 0")
+        
+        # Mark old reports as sent to avoid spamming
+        # "Old" means period_end_utc is older than 7 days from now
+        now = datetime.now(timezone.utc)
+        cur.execute(
+            "UPDATE reports SET is_sent = 1 WHERE period_end_utc < ?",
+            ((now - timedelta(days=7)).isoformat(),)
+        )
+        
+        # Also mark reports sent if they are daily reports from > 2 days ago (safety net)
+        cur.execute(
+            "UPDATE reports SET is_sent = 1 WHERE kind = 'daily' AND period_end_utc < ?",
+            ((now - timedelta(days=2)).isoformat(),)
+        )
+        
+        conn.commit()
 
     cur.execute(
         """
@@ -185,6 +209,7 @@ def _row_to_report(row: sqlite3.Row) -> Report:
         json_content=row["json_content"],
         html_content=row["html_content"],
         pdf_path=row["pdf_path"],
+        is_sent=bool(row["is_sent"]),
         created_at=datetime.fromisoformat(row["created_at"]),
     )
 
@@ -311,16 +336,19 @@ def create_report(
             """
             INSERT INTO reports
                 (kind, period_start_utc, period_end_utc,
-                 json_content, html_content, pdf_path, created_at)
-            VALUES (?, ?, ?, ?, ?, ?, ?)
+                 json_content, html_content, pdf_path, is_sent, created_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 kind,
                 period_start_utc.isoformat(),
                 period_end_utc.isoformat(),
                 json_content,
+                period_end_utc.isoformat(),
+                json_content,
                 html_content,
                 pdf_path,
+                0,  # is_sent = False initially
                 now.isoformat(),
             ),
         )
@@ -335,6 +363,7 @@ def create_report(
         json_content=json_content,
         html_content=html_content,
         pdf_path=pdf_path,
+        is_sent=False,
         created_at=now,
     )
 
@@ -595,5 +624,16 @@ def update_support_ticket_response(ticket_id: int, response: str) -> None:
             WHERE id = ?
             """,
             (response, now.isoformat(), ticket_id),
+        )
+        conn.commit()
+
+
+def mark_report_as_sent(report_id: int) -> None:
+    """Mark a report as successfully sent to users."""
+    with _get_connection() as conn:
+        cur = conn.cursor()
+        cur.execute(
+            "UPDATE reports SET is_sent = 1 WHERE id = ?",
+            (report_id,),
         )
         conn.commit()

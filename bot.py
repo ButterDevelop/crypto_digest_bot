@@ -35,6 +35,7 @@ from db import (
     create_support_ticket,
     get_support_ticket_by_admin_message,
     update_support_ticket_response,
+    mark_report_as_sent,
     User,
     Report,
 )
@@ -372,6 +373,7 @@ async def _send_report_to_user(
                 json_content=json.dumps(data),
                 html_content=None,
                 pdf_path=None,
+                is_sent=False,
                 created_at=report.created_at
             )
             
@@ -645,16 +647,6 @@ async def aggregate_reports_job(context: ContextTypes.DEFAULT_TYPE) -> None:
         logger.info("No eligible recipients for aggregate reports")
         # Still generate reports even if no recipients
     
-    # Helper function to check if report was just created (within last 5 minutes)
-    def _is_newly_created(report: Report) -> bool:
-        if report is None:
-            return False
-        created_at = report.created_at
-        if created_at.tzinfo is None:
-            created_at = created_at.replace(tzinfo=timezone.utc)
-        time_since_creation = now - created_at
-        return time_since_creation.total_seconds() < 300  # 5 minutes
-
     # === WEEKLY REPORT ===
     try:
         weekly_report = await ensure_last_weekly_report(now)
@@ -666,9 +658,9 @@ async def aggregate_reports_job(context: ContextTypes.DEFAULT_TYPE) -> None:
                 weekly_report.period_end_utc.isoformat(),
             )
             
-            # Send to users if newly created
-            if _is_newly_created(weekly_report) and recipients:
-                logger.info("Sending weekly report to %d users", len(recipients))
+            # Send to users if NOT SENT YET
+            if not weekly_report.is_sent and recipients:
+                logger.info("Sending weekly report (not sent yet) to %d users", len(recipients))
                 translated_cache: Dict[str, Dict] = {}
                 pdf_cache: Dict[str, str] = {}
                 
@@ -688,6 +680,10 @@ async def aggregate_reports_job(context: ContextTypes.DEFAULT_TYPE) -> None:
                             user.user_id, e
                         )
                         continue
+                
+                # Mark as sent after attempts
+                mark_report_as_sent(weekly_report.id)
+                logger.info("Marked weekly report %s as sent.", weekly_report.id)
     except Exception as e:
         logger.exception("Failed to ensure weekly report: %s", e)
 
@@ -702,9 +698,9 @@ async def aggregate_reports_job(context: ContextTypes.DEFAULT_TYPE) -> None:
                 monthly_report.period_end_utc.isoformat(),
             )
             
-            # Send to users if newly created
-            if _is_newly_created(monthly_report) and recipients:
-                logger.info("Sending monthly report to %d users", len(recipients))
+            # Send to users if NOT SENT YET
+            if not monthly_report.is_sent and recipients:
+                logger.info("Sending monthly report (not sent yet) to %d users", len(recipients))
                 translated_cache: Dict[str, Dict] = {}
                 pdf_cache: Dict[str, str] = {}
                 
@@ -724,6 +720,10 @@ async def aggregate_reports_job(context: ContextTypes.DEFAULT_TYPE) -> None:
                             user.user_id, e
                         )
                         continue
+                
+                # Mark as sent
+                mark_report_as_sent(monthly_report.id)
+                logger.info("Marked monthly report %s as sent.", monthly_report.id)
     except Exception as e:
         logger.exception("Failed to ensure monthly report: %s", e)
 
@@ -738,9 +738,9 @@ async def aggregate_reports_job(context: ContextTypes.DEFAULT_TYPE) -> None:
                 annual_report.period_end_utc.isoformat(),
             )
             
-            # Send to users if newly created
-            if _is_newly_created(annual_report) and recipients:
-                logger.info("Sending annual report to %d users", len(recipients))
+            # Send to users if NOT SENT YET
+            if not annual_report.is_sent and recipients:
+                logger.info("Sending annual report (not sent yet) to %d users", len(recipients))
                 translated_cache: Dict[str, Dict] = {}
                 pdf_cache: Dict[str, str] = {}
                 
@@ -760,6 +760,10 @@ async def aggregate_reports_job(context: ContextTypes.DEFAULT_TYPE) -> None:
                             user.user_id, e
                         )
                         continue
+
+                # Mark as sent
+                mark_report_as_sent(annual_report.id)
+                logger.info("Marked annual report %s as sent.", annual_report.id)
     except Exception as e:
         logger.exception("Failed to ensure annual report: %s", e)
 
