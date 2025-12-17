@@ -344,8 +344,6 @@ def create_report(
                 period_start_utc.isoformat(),
                 period_end_utc.isoformat(),
                 json_content,
-                period_end_utc.isoformat(),
-                json_content,
                 html_content,
                 pdf_path,
                 0,  # is_sent = False initially

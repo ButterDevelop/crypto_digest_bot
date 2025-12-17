@@ -278,7 +278,7 @@ INSTRUCTIONS = (
     "5) List PERFORMANT ASSETS (assets): by which coins/tokens "
     "from the news have the strongest signal (bullish/ bearish/neutral). Combine "
     "signals by one coin into one short card.\n"
-    "6) Ignore everything that looks like local noise, marketing noise or minor.\n\n"
+    "6) Ignore marketing spam (buy/sell calls, shills). If news is minor but relevant to the market, include it with 'low' priority.\n\n"
     "Priority category:"
     "- high - urgently, requires trader's attention (strong impulse, large risk or opportunity).\n"
     "- medium - important, but not critical.\n"
@@ -303,7 +303,7 @@ INSTRUCTIONS = (
     "}\n"
     "- All strings (text, reason, summary) must be in English.\n"
     "- summary - 1–5 short strings of general market context and coin performance: "
-    "who looks better/worse, due to which news, and general mood.\n"
+    "who looks better/worse, due to which news, and general mood. If nothing significant happened, briefly describe the market state.\n"
     "- positive / negative / macro - lists of objects:\n"
     "    - text     - concise, but clear description of the news;\n"
     "    - tickers  - array of tickers (e.g. [\"BTC\", \"ETH\"]), if it is clear to which coins the news relates; "
@@ -334,10 +334,7 @@ async def build_digest(
     """
 
     if not posts:
-        return await get_translation(
-            "🛏 There were no important news items found in the monitored channels for now.", 
-            lang
-        ), None
+        return "🛏 There were no important news items found in the monitored channels for now.", None
 
     # Collect raw posts into a single string
     raw_messages: list[str] = []
@@ -348,6 +345,7 @@ async def build_digest(
         raw_messages.append(f"[{ch}] {dt}\n{txt}")
 
     joined = "\n\n---\n\n".join(raw_messages)
+    logger.info(f"Building digest from {len(posts)} posts. Total text length: {len(joined)} chars.")
 
     # Call AI
     try:
@@ -398,6 +396,11 @@ async def build_digest(
             emoji = get_holiday_emoji(period_end_utc) or ""
             
         html_digest = build_html_digest_from_json(data, emoji=emoji)
+        
+        # Check if digest is effectively empty
+        if "No important news found" in html_digest:
+            logger.warning("Digest is empty (no sections). Raw JSON from LLM: %s", raw_json)
+            
     except Exception as e:
         logger.exception("Error building HTML digest from JSON: %s", e)
         return "Error building HTML digest from JSON, digest could not be built.", None
