@@ -280,6 +280,7 @@ INSTRUCTIONS = (
     "from the news have the strongest signal (bullish/ bearish/neutral). Combine "
     "signals by one coin into one short card.\n"
     "6) Ignore marketing spam (buy/sell calls, shills). If news is minor but relevant to the market, include it with 'low' priority.\n\n"
+    "7) You should avoid using loud 'yellow' headlines unless there is a good reason for it."
     "Priority category:"
     "- high - urgently, requires trader's attention (strong impulse, large risk or opportunity).\n"
     "- medium - important, but not critical.\n"
