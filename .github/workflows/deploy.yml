@@ -44,17 +44,22 @@ jobs:
             mkdir -p ${{ secrets.PROJECT_PATH }}
             cd ${{ secrets.PROJECT_PATH }}
             
-            # Initial clone if .git doesn't exist
+            # 1. Initialize or Update Repository
             if [ ! -d ".git" ]; then
-              git clone https://github.com/${{ github.repository }}.git .
-            else
-              git pull origin main
+              echo "Initializing git repository in existing directory..."
+              git init
+              git remote add origin https://github.com/${{ github.repository }}.git
             fi
             
-            # 1. Create .env from .env.template
-            cp .env.template .env
+            git fetch origin main
+            git reset --hard origin/main
             
-            # 2. Inject sensitive secrets using sed
+            # 2. Setup Environment
+            if [ ! -f ".env" ]; then
+               cp .env.template .env
+            fi
+            
+            # Inject sensitive secrets (using sed with | delimiter to handle special characters)
             sed -i "s|TELEGRAM_BOT_TOKEN=.*|TELEGRAM_BOT_TOKEN=${{ secrets.TELEGRAM_BOT_TOKEN }}|g" .env
             sed -i "s|OPENAI_API_KEY=.*|OPENAI_API_KEY=${{ secrets.OPENAI_API_KEY }}|g" .env
             sed -i "s|DEEPSEEK_API_KEY=.*|DEEPSEEK_API_KEY=${{ secrets.DEEPSEEK_API_KEY }}|g" .env
