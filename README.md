@@ -22,7 +22,7 @@ A powerful Telegram bot that aggregates cryptocurrency news from multiple channe
 ### 📤 Delivery Modes
 - **PDF Reports** - professionally styled A4 documents with sections, colors, and emojis
 - **Telegram Messages** - expandable blockquotes with inline formatting
-- Users choose their preferred mode via `/digest_mode`
+- Users choose their preferred mode and **report types** (Daily, Weekly, Monthly, Annual) via `/digest_mode`
 
 ### 📬 Support System
 - **Support Tickets** - users send messages via `/support <message>`
@@ -64,7 +64,34 @@ A powerful Telegram bot that aggregates cryptocurrency news from multiple channe
 
 ---
 
-## 🚀 Installation
+## 🚀 Quick Start (Docker)
+
+The easiest way to run the bot is using Docker and Docker Compose.
+
+### 1. Prerequisites
+- [Docker](https://docs.docker.com/get-docker/)
+- [Docker Compose](https://docs.docker.com/compose/install/)
+
+### 2. Setup
+```bash
+git clone https://github.com/ButterDevelop/crypto_digest_bot.git
+cd crypto_digest_bot
+cp .env.template .env
+```
+
+### 3. Configure
+Edit `.env` and provide your `TELEGRAM_BOT_TOKEN` and `OPENAI_API_KEY`.
+
+### 4. Run
+```bash
+docker compose up -d
+```
+
+The database and logs will be persisted in the `./data` directory.
+
+---
+
+## 🛠️ Manual Installation
 
 ### 1. Clone the Repository
 
@@ -177,12 +204,33 @@ DB_PATH=bot.db
 
 # === Admin Setup ===
 # Your Telegram user ID - you'll get admin rights automatically
-# INITIAL_ADMIN_ID=123456789
+INITIAL_ADMIN_ID=123456789
 
 # === Localization ===
 # Allowed language codes (comma-separated)
 ALLOWED_LANGUAGES=en,ru,uk,de,fr,es,pt,zh,ja,ko
 ```
+
+---
+
+## 🚢 CI/CD Deployment
+
+The project includes a GitHub Actions workflow for automatic deployment.
+
+### 1. GitHub Secrets
+Add the following secrets to your repository (`Settings > Secrets and variables > Actions`):
+- `SSH_HOST`: Server IP
+- `SSH_USER`: SSH username (e.g., `root`)
+- `SSH_KEY`: Private SSH key
+- `PROJECT_PATH`: Path on server (e.g., `/var/www/crypto_bot`)
+- `GHCR_TOKEN`: GitHub PAT with `read:packages`
+- `TELEGRAM_BOT_TOKEN`, `OPENAI_API_KEY`, etc.
+
+### 2. Deployment
+Every push to the `main` branch will automatically:
+1. Build a new Docker image.
+2. Push it to GitHub Container Registry (GHCR).
+3. SSH into your server, pull the latest changes, and restart the bot.
 
 ---
 
@@ -212,7 +260,7 @@ The bot will:
 | `/subscribe` | Activate or extend subscription using your Stars balance |
 | `/topup [amount]` | Create a Telegram Stars invoice to top up balance |
 | `/digest` | Request an immediate personal digest (uses free trial or subscription) |
-| `/digest_mode` | Switch between PDF and message delivery |
+| `/digest_mode` | Switch delivery format (PDF/Message) and toggle report types (Daily/Weekly/Monthly/Annual) |
 | `/language` | Change interface and digest language |
 | `/support <message>` | Send a support message (attach media within 1 min or immediately) |
 
@@ -246,7 +294,10 @@ crypto_digest_bot/
 ├── ai_client.py           # OpenAI client wrapper (with proxy support)
 ├── requirements.txt       # Python dependencies
 ├── .env.template          # Environment variable template
-└── bot.db                 # SQLite database (created on first run)
+├── bot.db                 # SQLite database (created on first run)
+├── Dockerfile             # Multi-stage Docker build file
+├── docker-compose.yml     # Docker Compose orchestration
+└── .github/workflows/     # CI/CD deployment logic
 ```
 
 ---
@@ -256,7 +307,7 @@ crypto_digest_bot/
 The bot uses SQLite with three main tables:
 
 ### `users`
-Stores user data: subscription status, balance, language preference, delivery mode.
+Stores user data: subscription status, balance, language preference, delivery mode, and **report preferences** (`daily,weekly,monthly,annual`).
 
 ### `reports`  
 Stores generated digests (daily, weekly, monthly, annual) with JSON content and optional PDF paths.

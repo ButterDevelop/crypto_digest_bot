@@ -426,7 +426,7 @@ async def global_digest_job(context: ContextTypes.DEFAULT_TYPE) -> None:
     now = _now_utc()
     users = get_all_users()
     recipients: List[User] = [
-        u for u in users if _user_can_receive_digest(u, now)
+        u for u in users if _user_can_receive_digest(u, now) and "daily" in (u.report_types or "")
     ]
 
     if not recipients:
@@ -637,15 +637,14 @@ async def aggregate_reports_job(context: ContextTypes.DEFAULT_TYPE) -> None:
     now = _now_utc()
     logger.info("Running aggregate_reports_job at %s", now.isoformat())
 
-    # Get all users who should receive digests
+    # Get all users
     users = get_all_users()
-    recipients: List[User] = [
+    eligible_users: List[User] = [
         u for u in users if _user_can_receive_digest(u, now)
     ]
 
-    if not recipients:
-        logger.info("No eligible recipients for aggregate reports")
-        # Still generate reports even if no recipients
+    if not eligible_users:
+        logger.info("No eligible users for aggregate reports, but we still generate them if needed.")
     
     # === WEEKLY REPORT ===
     try:
@@ -659,12 +658,14 @@ async def aggregate_reports_job(context: ContextTypes.DEFAULT_TYPE) -> None:
             )
             
             # Send to users if NOT SENT YET
-            if not weekly_report.is_sent and recipients:
-                logger.info("Sending weekly report (not sent yet) to %d users", len(recipients))
+            if not weekly_report.is_sent and eligible_users:
+                logger.info("Sending weekly report (not sent yet) to users who enabled it")
                 translated_cache: Dict[str, Dict] = {}
                 pdf_cache: Dict[str, str] = {}
                 
-                for user in recipients:
+                for user in eligible_users:
+                    if "weekly" not in (user.report_types or ""):
+                        continue
                     try:
                         await _send_report_to_user(
                             context,
@@ -699,12 +700,14 @@ async def aggregate_reports_job(context: ContextTypes.DEFAULT_TYPE) -> None:
             )
             
             # Send to users if NOT SENT YET
-            if not monthly_report.is_sent and recipients:
-                logger.info("Sending monthly report (not sent yet) to %d users", len(recipients))
+            if not monthly_report.is_sent and eligible_users:
+                logger.info("Sending monthly report (not sent yet) to users who enabled it")
                 translated_cache: Dict[str, Dict] = {}
                 pdf_cache: Dict[str, str] = {}
                 
-                for user in recipients:
+                for user in eligible_users:
+                    if "monthly" not in (user.report_types or ""):
+                        continue
                     try:
                         await _send_report_to_user(
                             context,
@@ -739,12 +742,14 @@ async def aggregate_reports_job(context: ContextTypes.DEFAULT_TYPE) -> None:
             )
             
             # Send to users if NOT SENT YET
-            if not annual_report.is_sent and recipients:
-                logger.info("Sending annual report (not sent yet) to %d users", len(recipients))
+            if not annual_report.is_sent and eligible_users:
+                logger.info("Sending annual report (not sent yet) to users who enabled it")
                 translated_cache: Dict[str, Dict] = {}
                 pdf_cache: Dict[str, str] = {}
                 
-                for user in recipients:
+                for user in eligible_users:
+                    if "annual" not in (user.report_types or ""):
+                        continue
                     try:
                         await _send_report_to_user(
                             context,
@@ -789,7 +794,7 @@ async def _append_user_commands(lines: List[str], lang: str) -> None:
     lines.append("/status - " + await get_translation("show your status and subscription", lang))
     lines.append("/subscribe - " + await get_translation("subscribe to the global digest", lang))
     lines.append("/topup - " + await get_translation("top up your balance", lang))
-    lines.append("/digest_mode - " + await get_translation("change digest mode", lang))
+    lines.append("/digest_mode - " + await get_translation("change digest mode and report types", lang))
     lines.append("/language - " + await get_translation("change language", lang))
     lines.append("/support - " + await get_translation("send a message to support", lang))
 
@@ -933,8 +938,20 @@ async def status_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
     )
     
     delivery_mode = getattr(user, "delivery_mode", "pdf")
-    msg_mode = await get_translation("📨 Digest mode:", lang)
+    msg_mode = await get_translation("📨 Digest format:", lang)
     lines.append(f"{msg_mode} <code>{await get_translation(delivery_mode, lang)}</code>")
+    
+    report_types_str = user.report_types or ""
+    enabled_types = []
+    for k in ["daily", "weekly", "monthly", "annual"]:
+        if k in report_types_str:
+            label = await get_translation(k.capitalize(), lang)
+            enabled_types.append(label)
+    
+    msg_types = await get_translation("📈 Enabled reports:", lang)
+    types_val = ", ".join(enabled_types) if enabled_types else await get_translation("none", lang)
+    lines.append(f"{msg_types} <code>{types_val}</code>")
+    
     lines.append("")
     
     msg_interval = await get_translation("⏱️ Current auto-digest interval: every", lang)
@@ -960,9 +977,43 @@ async def status_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
     await update.message.reply_text("\n".join(lines), parse_mode="HTML")
 
 
+async def _get_digest_mode_keyboard(user: User, lang: str) -> InlineKeyboardMarkup:
+    """Helper to build the inline keyboard for digest settings."""
+    # 1. Delivery mode row
+    mode_pdf = "PDF" + (" ✅" if user.delivery_mode == "pdf" else "")
+    mode_msgs = (await get_translation("Messages", lang)) + (" ✅" if user.delivery_mode == "messages" else "")
+    
+    # 2. Report types rows
+    report_types = (user.report_types or "").split(",")
+    
+    def get_indicator(kind: str) -> str:
+        return "✅" if kind in report_types else "❌"
+
+    daily_label = (await get_translation("Daily", lang)) + " " + get_indicator("daily")
+    weekly_label = (await get_translation("Weekly", lang)) + " " + get_indicator("weekly")
+    monthly_label = (await get_translation("Monthly", lang)) + " " + get_indicator("monthly")
+    annual_label = (await get_translation("Annual", lang)) + " " + get_indicator("annual")
+
+    keyboard = [
+        [
+            InlineKeyboardButton(mode_pdf, callback_data="set_mode_pdf"),
+            InlineKeyboardButton(mode_msgs, callback_data="set_mode_messages"),
+        ],
+        [
+            InlineKeyboardButton(daily_label, callback_data="toggle_report_daily"),
+            InlineKeyboardButton(weekly_label, callback_data="toggle_report_weekly"),
+        ],
+        [
+            InlineKeyboardButton(monthly_label, callback_data="toggle_report_monthly"),
+            InlineKeyboardButton(annual_label, callback_data="toggle_report_annual"),
+        ]
+    ]
+    return InlineKeyboardMarkup(keyboard)
+
+
 async def digest_mode_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """
-    /digest_mode - show buttons to select digest mode.
+    /digest_mode - show settings to select digest mode and report types.
     """
     tg_user = update.effective_user
     if tg_user is None:
@@ -971,21 +1022,13 @@ async def digest_mode_command(update: Update, context: ContextTypes.DEFAULT_TYPE
     user = get_or_create_user(tg_user.id)
     lang = user.language or "ru"
     
-    current = getattr(user, "delivery_mode", "pdf")
-    
-    msg_select = await get_translation("📝 Select digest mode:", lang)
-    msg_current = await get_translation("📌 Current:", lang)
+    msg_title = await get_translation("⚙️ <b>Digest Settings</b>", lang)
+    msg_instr = await get_translation("Choose delivery format and report types you want to receive:", lang)
 
-    keyboard = [
-        [
-            InlineKeyboardButton("PDF", callback_data="set_mode_pdf"),
-            InlineKeyboardButton("Messages", callback_data="set_mode_messages"),
-        ]
-    ]
-    reply_markup = InlineKeyboardMarkup(keyboard)
+    reply_markup = await _get_digest_mode_keyboard(user, lang)
 
     await update.message.reply_text(
-        f"{msg_select}\n{msg_current} <code>{await get_translation(current, lang)}</code>",
+        f"{msg_title}\n\n{msg_instr}",
         reply_markup=reply_markup,
         parse_mode="HTML"
     )
@@ -993,37 +1036,47 @@ async def digest_mode_command(update: Update, context: ContextTypes.DEFAULT_TYPE
 
 async def digest_mode_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """
-    Handle mode selection callback.
+    Handle settings selection callback.
     """
     query = update.callback_query
-    await query.answer()
-
     tg_user = update.effective_user
     if tg_user is None:
         return
 
     user = get_or_create_user(tg_user.id)
     lang = user.language or "ru"
-
     data = query.data
-    if data == "set_mode_pdf":
-        new_mode = "pdf"
-    elif data == "set_mode_messages":
-        new_mode = "messages"
-    else:
-        return
 
-    user.delivery_mode = new_mode
-    user.updated_at = _now_utc()
-    update_user(user)
+    updated = False
 
-    msg_updated = await get_translation("Digest mode updated to:", lang)
+    if data.startswith("set_mode_"):
+        new_mode = data.replace("set_mode_", "")
+        if new_mode != user.delivery_mode:
+            user.delivery_mode = new_mode
+            updated = True
+            
+    elif data.startswith("toggle_report_"):
+        kind = data.replace("toggle_report_", "")
+        report_types = (user.report_types or "").split(",")
+        if kind in report_types:
+            report_types.remove(kind)
+        else:
+            report_types.append(kind)
+        # remove empty strings and join
+        user.report_types = ",".join(filter(None, report_types))
+        updated = True
+
+    if updated:
+        user.updated_at = _now_utc()
+        update_user(user)
+        
+        reply_markup = await _get_digest_mode_keyboard(user, lang)
+        try:
+            await query.edit_message_reply_markup(reply_markup=reply_markup)
+        except Exception:
+            pass # Message might be the same
     
-    # Update message text removing buttons
-    await query.edit_message_text(
-        text=f"{msg_updated} <code>{new_mode}</code>",
-        parse_mode="HTML"
-    )
+    await query.answer()
 
 
 async def digest_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:

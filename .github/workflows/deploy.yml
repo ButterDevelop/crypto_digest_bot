@@ -1,0 +1,69 @@
+name: Build and Deploy Bot
+
+on:
+  push:
+    branches:
+      - main
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Log in to GHCR
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Build and push Docker image
+        uses: docker/build-push-action@v5
+        with:
+          context: .
+          push: true
+          tags: ghcr.io/butterdevelop/crypto_digest_bot:latest
+
+  deploy:
+    runs-on: ubuntu-latest
+    needs: build
+    steps:
+      - name: Deploy via SSH
+        uses: appleboy/ssh-action@v1.0.3
+        with:
+          host: ${{ secrets.SSH_HOST }}
+          username: ${{ secrets.SSH_USER }}
+          key: ${{ secrets.SSH_KEY }}
+          script: |
+            echo "${{ secrets.GHCR_TOKEN }}" | docker login ghcr.io -u ${{ github.actor }} --password-stdin
+            mkdir -p ${{ secrets.PROJECT_PATH }}
+            cd ${{ secrets.PROJECT_PATH }}
+            
+            # Initial clone if .git doesn't exist
+            if [ ! -d ".git" ]; then
+              git clone https://github.com/${{ github.repository }}.git .
+            else
+              git pull origin main
+            fi
+            
+            # 1. Create .env from .env.template
+            cp .env.template .env
+            
+            # 2. Inject sensitive secrets using sed
+            sed -i "s|TELEGRAM_BOT_TOKEN=.*|TELEGRAM_BOT_TOKEN=${{ secrets.TELEGRAM_BOT_TOKEN }}|g" .env
+            sed -i "s|OPENAI_API_KEY=.*|OPENAI_API_KEY=${{ secrets.OPENAI_API_KEY }}|g" .env
+            sed -i "s|DEEPSEEK_API_KEY=.*|DEEPSEEK_API_KEY=${{ secrets.DEEPSEEK_API_KEY }}|g" .env
+            sed -i "s|# INITIAL_ADMIN_ID=.*|INITIAL_ADMIN_ID=${{ secrets.INITIAL_ADMIN_ID }}|g" .env
+            sed -i "s|DB_PATH=.*|DB_PATH=/app/data/bot.db|g" .env
+            
+            # 3. Pull latest image and restart
+            docker compose pull
+            docker compose up -d
+            
+            # 4. Clean up old images
+            docker image prune -f

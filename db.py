@@ -19,13 +19,14 @@ class User:
     last_renewal_reminder_date: Optional[date]
     language: str
     delivery_mode: str  # 'pdf' | 'messages'
+    report_types: str   # comma-separated 'daily,weekly,monthly,annual'
     created_at: datetime
     updated_at: datetime
 
 @dataclass
 class Report:
     id: int
-    kind: str  # 'daily' | 'weekly' | 'monthly'
+    kind: str  # 'daily' | 'weekly' | 'monthly' | 'annual'
     period_start_utc: datetime
     period_end_utc: datetime
     json_content: str
@@ -76,6 +77,7 @@ def init_db() -> None:
             last_renewal_reminder_date TEXT,
             language TEXT NOT NULL DEFAULT 'ru',
             delivery_mode TEXT NOT NULL DEFAULT 'pdf',
+            report_types TEXT NOT NULL DEFAULT 'daily,weekly,monthly,annual',
             created_at TEXT NOT NULL,
             updated_at TEXT NOT NULL
         )
@@ -161,6 +163,12 @@ def init_db() -> None:
         cur.execute("ALTER TABLE support_tickets ADD COLUMN media_file_id TEXT")
         cur.execute("ALTER TABLE support_tickets ADD COLUMN media_caption TEXT")
 
+    # Add report_types column if missing (migration)
+    try:
+        cur.execute("SELECT report_types FROM users LIMIT 1")
+    except sqlite3.OperationalError:
+        cur.execute("ALTER TABLE users ADD COLUMN report_types TEXT NOT NULL DEFAULT 'daily,weekly,monthly,annual'")
+
     conn.commit()
     conn.close()
 
@@ -186,6 +194,11 @@ def _row_to_user(row: sqlite3.Row) -> User:
     except (KeyError, IndexError):
         delivery_mode = "pdf"
 
+    try:
+        report_types = row["report_types"] or "daily,weekly,monthly,annual"
+    except (KeyError, IndexError):
+        report_types = "daily,weekly,monthly,annual"
+
     return User(
         user_id=row["user_id"],
         is_admin=bool(row["is_admin"]),
@@ -195,6 +208,7 @@ def _row_to_user(row: sqlite3.Row) -> User:
         last_renewal_reminder_date=_parse_date(row["last_renewal_reminder_date"]),
         language=language,
         delivery_mode=delivery_mode,
+        report_types=report_types,
         created_at=datetime.fromisoformat(row["created_at"]),
         updated_at=datetime.fromisoformat(row["updated_at"]),
     )
@@ -251,8 +265,8 @@ def get_or_create_user(user_id: int, language: str = "ru") -> User:
             INSERT INTO users
                 (user_id, is_admin, balance_stars, subscription_until,
                  free_digest_used, last_renewal_reminder_date, language,
-                 created_at, updated_at)
-            VALUES (?, ?, 0, NULL, 0, NULL, ?, ?, ?)
+                 delivery_mode, report_types, created_at, updated_at)
+            VALUES (?, ?, 0, NULL, 0, NULL, ?, 'pdf', 'daily,weekly,monthly,annual', ?, ?)
             """,
             (user_id, is_admin, lang_norm, now_iso, now_iso),
         )
@@ -267,6 +281,7 @@ def get_or_create_user(user_id: int, language: str = "ru") -> User:
         last_renewal_reminder_date=None,
         language=lang_norm,
         delivery_mode="pdf",
+        report_types="daily,weekly,monthly,annual",
         created_at=now,
         updated_at=now,
     )
@@ -286,6 +301,7 @@ def update_user(user: User) -> None:
                 last_renewal_reminder_date = ?,
                 language = ?,
                 delivery_mode = ?,
+                report_types = ?,
                 created_at = ?,
                 updated_at = ?
             WHERE user_id = ?
@@ -302,6 +318,7 @@ def update_user(user: User) -> None:
                 else None,
                 user.language or "ru",
                 user.delivery_mode or "pdf",
+                user.report_types or "daily,weekly,monthly,annual",
                 user.created_at.isoformat(),
                 user.updated_at.isoformat(),
                 user.user_id,
