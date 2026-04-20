@@ -48,8 +48,15 @@ jobs:
             if [ ! -d ".git" ]; then
               echo "Initializing git repository in existing directory..."
               git init
-              git remote add origin https://github.com/${{ github.repository }}.git
+              # Use GITHUB_TOKEN for authentication to avoid password prompt
+              git remote add origin https://x-access-token:${{ secrets.GITHUB_TOKEN }}@github.com/${{ github.repository }}.git
+            else
+              # Ensure the remote URL is up to date with the current token
+              git remote set-url origin https://x-access-token:${{ secrets.GITHUB_TOKEN }}@github.com/${{ github.repository }}.git
             fi
+            
+            # Prevent git from asking for interactive input
+            git config --local core.askPass /bin/echo
             
             git fetch origin main
             git reset --hard origin/main
