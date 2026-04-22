@@ -2486,7 +2486,7 @@ def main() -> None:
     application.add_handler(CommandHandler(["start", "help"], start))
     application.add_handler(CommandHandler("status", status_command))
     application.add_handler(CommandHandler("digest_mode", digest_mode_command))
-    application.add_handler(CallbackQueryHandler(digest_mode_callback, pattern="^set_mode_"))
+    application.add_handler(CallbackQueryHandler(digest_mode_callback, pattern="^(set_mode_|toggle_report_)"))
     
     application.add_handler(CommandHandler("language", language_command))
     application.add_handler(CallbackQueryHandler(language_callback, pattern="^set_lang_"))
